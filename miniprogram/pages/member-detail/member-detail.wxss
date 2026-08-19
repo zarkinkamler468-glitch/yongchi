@@ -1,0 +1,49 @@
+.page { padding: 24rpx; }
+.head { margin-bottom: 24rpx; }
+.head-top { display: flex; align-items: center; justify-content: space-between; }
+.head-name { font-size: 40rpx; font-weight: 800; }
+.head-no { font-size: 24rpx; color: #64748b; margin: 8rpx 0 16rpx; }
+.head-tags { font-size: 24rpx; color: #2563eb; margin-top: 8rpx; }
+.head .badge { margin-right: 12rpx; }
+
+.card-item { padding: 20rpx 0; border-bottom: 1rpx solid rgba(15,23,42,0.05); }
+.card-item:last-child { border-bottom: none; }
+.ci-head { display: flex; align-items: center; justify-content: space-between; }
+.ci-name { font-size: 28rpx; font-weight: 600; }
+.ci-sub { font-size: 24rpx; color: #64748b; margin-top: 8rpx; }
+.btn-sm { display: inline-flex; align-items: center; justify-content: center; height: 60rpx; padding: 0 24rpx; font-size: 24rpx; border-radius: 12rpx; background: #eef2f7; color: #1e293b; }
+.btn-sm::after { border: none; }
+
+.asset-grid { display: flex; gap: 16rpx; margin-bottom: 24rpx; }
+.asset {
+  flex: 1; background: rgba(255,255,255,0.86); border-radius: 20rpx;
+  padding: 24rpx; box-shadow: 0 8rpx 24rpx rgba(30,41,59,0.06);
+  text-align: center;
+}
+.asset-label { font-size: 22rpx; color: #64748b; }
+.asset-value { font-size: 30rpx; font-weight: 800; margin-top: 10rpx; }
+
+.actions { display: flex; gap: 16rpx; margin-bottom: 24rpx; }
+.act { flex: 1; height: 88rpx; font-size: 30rpx; }
+
+.card { margin-bottom: 24rpx; }
+.card-title { font-size: 28rpx; font-weight: 700; margin-bottom: 16rpx; }
+.rec-row { display: flex; align-items: center; justify-content: space-between; padding: 16rpx 0; border-bottom: 1rpx solid rgba(15,23,42,0.05); }
+.rec-row:last-child { border-bottom: none; }
+.rec-name { font-size: 26rpx; }
+.rec-time { font-size: 22rpx; color: #94a3b8; margin-top: 4rpx; }
+.rec-amount { font-size: 28rpx; font-weight: 700; }
+.rec-amount.pos { color: #16a34a; }
+.rec-amount.neg { color: #dc2626; }
+.empty { text-align: center; color: #94a3b8; padding: 30rpx 0; font-size: 24rpx; }
+
+/* 充值弹层 */
+.sheet {
+  position: fixed; left: 40rpx; right: 40rpx; top: 50%; transform: translateY(-50%);
+  z-index: 95; background: #fff; border-radius: 24rpx; padding: 32rpx;
+}
+.sheet-title { font-size: 30rpx; font-weight: 700; margin-bottom: 20rpx; text-align: center; }
+.sheet .input { margin-bottom: 20rpx; }
+.sheet .picker { margin-bottom: 20rpx; }
+.sheet-btn { width: 100%; }
+.preview-line { margin: 14rpx 0; color: #475569; font-size: 26rpx; line-height: 1.6; }

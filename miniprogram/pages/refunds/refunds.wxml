@@ -1,0 +1,14 @@
+<view class="page">
+  <view class="card">
+    <view class="card-title">待审批退款</view>
+    <view class="rf-row" wx:for="{{list}}" wx:key="id">
+      <view class="rf-head"><text class="rf-no">{{item.order_no}}</text><text class="rf-amt num">{{item.amountText}}</text></view>
+      <view class="rf-sub">{{item.member}} · 原单 {{item.original_order_id}} · {{item.refund_reason || '—'}}</view>
+      <view class="rf-actions">
+        <button class="btn btn-success rf-btn" data-id="{{item.id}}" bindtap="approve">通过</button>
+        <button class="btn btn-danger rf-btn" data-id="{{item.id}}" bindtap="reject">驳回</button>
+      </view>
+    </view>
+    <view class="empty" wx:if="{{!list.length}}">暂无待审批退款</view>
+  </view>
+</view>

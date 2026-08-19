@@ -1,0 +1,74 @@
+<view class="page">
+  <view wx:if="{{mode === 'home'}}" class="cashier-home">
+    <view class="page-head"><view class="page-kicker">收银台</view><view class="page-title">快速办理业务</view><view class="page-desc">选择业务类型后直接进入办理流程</view></view>
+    <view class="quick-sales">
+      <view class="sales-action checkin-action" bindtap="openCheckin"><view class="line-icon icon-checkin"></view><view class="sales-title">快速核销</view><view class="sales-desc">输入卡号或手机号直接入场</view></view>
+      <view class="sales-action" data-tab="open" bindtap="openCashier"><view class="line-icon">＋</view><view class="sales-title">开卡</view><view class="sales-desc">新建会员卡账户</view></view>
+      <view class="sales-action" data-tab="renew" bindtap="openCashier"><view class="line-icon">↻</view><view class="sales-title">续费</view><view class="sales-desc">延长有效期或增加次数</view></view>
+      <view class="sales-action" data-tab="recharge" bindtap="openCashier"><view class="line-icon">▱</view><view class="sales-title">储值充值</view><view class="sales-desc">为储值卡增加余额</view></view>
+    </view>
+  </view>
+  <view wx:elif="{{mode === 'checkin'}}" class="cashier-checkin">
+    <view class="form-head"><view class="back" bindtap="goHome">‹</view><view><view class="page-kicker">快速核销</view><view class="page-title">入场核销</view></view></view>
+    <view class="card"><view class="field"><view class="field-label">卡号 / 手机号 / 会员编号</view><input class="input big" value="{{checkinKeyword}}" data-key="checkinKeyword" bindinput="onCheckinInput" bindconfirm="submitCheckin" placeholder="请输入查询内容" /></view><view class="field"><view class="field-label">同行人数</view><input class="input" type="number" value="{{checkinPeople}}" data-key="checkinPeople" bindinput="onCheckinInput" /></view><button class="btn btn-primary" bindtap="submitCheckin">查询会员</button></view>
+    <view class="card result-card" wx:if="{{checkinResult}}"><view wx:if="{{checkinResult.ok}}" class="result-ok">{{checkinResult.name}} · {{checkinResult.phone}} · {{checkinResult.card}} · {{checkinResult.asset}}</view><view wx:else class="result-fail">{{checkinResult.error}}</view><button wx:if="{{checkinResult.ok && checkinResult.pending}}" class="btn btn-primary" bindtap="confirmCheckin">确认核销并扣减</button></view>
+  </view>
+  <block wx:else>
+  <view class="form-head"><view class="back" bindtap="goHome">‹</view><view><view class="page-kicker">收银台</view><view class="page-title">{{tab==='open'?'开卡':tab==='renew'?'会员卡续费':'储值充值'}}</view></view></view>
+  <view class="tabs">
+    <view class="tab {{tab==='open'?'active':''}}" data-tab="open" bindtap="setTab">开卡</view>
+    <view class="tab {{tab==='renew'?'active':''}}" data-tab="renew" bindtap="setTab">续费</view>
+    <view class="tab {{tab==='recharge'?'active':''}}" data-tab="recharge" bindtap="setTab">储值充值</view>
+  </view>
+
+  <view class="card">
+    <view class="field"><view class="field-label">会员</view><view class="member-search"><input class="input" value="{{memberQuery}}" bindinput="searchMember" placeholder="搜索姓名 / 会员号 / 手机号" /><view class="search-mark">⌕</view></view><view class="selected-hint" wx:if="{{selectedMember}}">已选择：{{selectedMember.name}}（{{selectedMember.member_no}}）</view><view class="new-member-link" bindtap="chooseNewMember">＋ 新建会员</view></view>
+    <block wx:if="{{memberIndex === 0}}">
+      <view class="row">
+        <view class="field" style="flex:1;margin-right:12rpx"><view class="field-label">姓名 *</view><input class="input" value="{{newName}}" data-key="newName" bindinput="onInput" placeholder="姓名" /></view>
+        <view class="field" style="flex:1"><view class="field-label">手机号</view><input class="input" value="{{newPhone}}" data-key="newPhone" bindinput="onInput" placeholder="手机号" /></view>
+      </view>
+      <view class="field"><view class="field-label">性别</view>
+        <picker range="{{['未知','男','女']}}" bindchange="onGender"><view class="picker">{{newGender === 'male' ? '男' : (newGender === 'female' ? '女' : '未知')}}</view></picker>
+      </view>
+    </block>
+
+    <block wx:if="{{tab === 'open'}}">
+      <view class="field"><view class="field-label">卡项</view>
+        <picker range="{{products}}" range-key="name" value="{{productIndex}}" bindchange="pickProduct"><view class="picker">{{products[productIndex] ? products[productIndex].name : '—'}}</view></picker>
+      </view>
+    </block>
+    <block wx:if="{{tab === 'renew'}}">
+      <view class="field"><view class="field-label">会员卡</view>
+        <picker range="{{cardOptions}}" range-key="label" value="{{cardIndex}}" bindchange="pickCard"><view class="picker">{{cardOptions[cardIndex] ? cardOptions[cardIndex].label : '请先选会员'}}</view></picker>
+      </view>
+      <view class="field"><view class="field-label">续费卡项（同卡种）</view>
+        <picker range="{{products}}" range-key="name" value="{{productIndex}}" bindchange="pickProduct"><view class="picker">{{products[productIndex] ? products[productIndex].name : '—'}}</view></picker>
+      </view>
+    </block>
+    <block wx:if="{{tab === 'recharge'}}">
+      <view class="field"><view class="field-label">储值卡</view>
+        <picker range="{{cardOptions}}" range-key="label" value="{{cardIndex}}" bindchange="pickCard"><view class="picker">{{cardOptions[cardIndex] ? cardOptions[cardIndex].label : '请先选会员'}}</view></picker>
+      </view>
+      <view class="field"><view class="field-label">充值金额（元）</view><input class="input" type="digit" value="{{amount}}" data-key="amount" bindinput="onInput" /></view>
+    </block>
+
+    <view class="field"><view class="field-label">优惠金额（元）</view><input class="input" type="digit" value="{{discount}}" data-key="discount" bindinput="onInput" /></view>
+  </view>
+
+  <view class="card">
+    <view class="field"><view class="field-label">支付方式</view>
+      <view class="pays">
+        <view class="pay {{payMethod==='cash'?'active':''}}" data-pay="cash" bindtap="pickPay">现金</view>
+        <view class="pay {{payMethod==='wechat'?'active':''}}" data-pay="wechat" bindtap="pickPay">微信</view>
+        <view class="pay {{payMethod==='alipay'?'active':''}}" data-pay="alipay" bindtap="pickPay">支付宝</view>
+        <view class="pay {{payMethod==='stored'?'active':''}}" data-pay="stored" bindtap="pickPay">储值</view>
+      </view>
+    </view>
+    <view class="total-row"><text>应收金额</text><text class="num">{{payable}}</text></view>
+    <view class="field"><view class="field-label">实收金额（默认自动，可改）</view><input class="input big" type="digit" value="{{payAmount}}" bindinput="onAmountInput" /></view>
+    <button class="btn btn-primary" bindtap="submit">确认收款</button>
+  </view>
+  </block>
+  <view class="picker-mask" wx:if="{{showMemberPicker}}" bindtap="closeMemberPicker"></view><view class="member-sheet" wx:if="{{showMemberPicker}}"><view class="sheet-title">查询会员</view><view class="member-option new" bindtap="chooseNewMember">＋ 新建会员</view><view class="member-option" wx:for="{{memberResults}}" wx:key="id" data-id="{{item.id}}" bindtap="chooseMember">{{item.name}} · {{item.member_no}}<text>{{item.phone || ''}}</text></view><view class="empty" wx:if="{{!memberQuery}}">请输入姓名、手机号或会员编号查询</view><view class="empty" wx:elif="{{!memberResults.length}}">没有找到匹配会员</view></view>
+</view>

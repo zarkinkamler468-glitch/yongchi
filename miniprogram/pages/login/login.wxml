@@ -1,0 +1,50 @@
+<view class="login-page">
+  <image wx:if="{{loginBg}}" class="login-bg" src="{{loginBg}}" mode="aspectFill" />
+  <view class="login-shade"></view>
+  <view class="login-card">
+    <view class="logo"><image wx:if="{{brandLogoImg}}" class="logo-image" src="{{brandLogoImg}}" mode="aspectFit" /><text wx:else>{{brandIcon}}</text></view>
+    <view class="title">{{storeName}}</view>
+    <view class="sub">员工端 · 请登录</view>
+
+    <!-- 微信登录优先 -->
+    <button class="btn btn-primary login-btn" bindtap="wxLogin" disabled="{{loading || checking}}" wx:if="{{!needBind}}">
+      {{checking ? '正在检查登录状态…' : '微信一键登录'}}
+    </button>
+
+    <view class="divider" wx:if="{{!needBind}}">或账号密码登录</view>
+
+    <block wx:if="{{!needBind}}">
+      <view class="field">
+        <view class="field-label">账号</view>
+        <input class="input" value="{{username}}" data-key="username" bindinput="onInput" placeholder="请输入账号" />
+      </view>
+      <view class="field">
+        <view class="field-label">密码</view>
+        <input class="input" password value="{{password}}" data-key="password" bindinput="onInput" bindconfirm="pwdLogin" placeholder="请输入密码" />
+      </view>
+      <view class="field">
+        <view class="field-label">验证码</view>
+        <view class="captcha-row"><input class="input" value="{{captchaCode}}" data-key="captchaCode" bindinput="onInput" placeholder="验证码" maxlength="4" /><image class="captcha-img" src="{{captchaSrc}}" mode="aspectFit" bindtap="loadCaptcha" /></view>
+      </view>
+      <button class="btn login-btn" bindtap="pwdLogin" disabled="{{loading}}">账号密码登录</button>
+    </block>
+
+    <!-- 首次绑定 -->
+    <block wx:if="{{needBind}}">
+      <view class="sub">该微信尚未绑定员工账号，请输入账号密码完成绑定（仅首次）</view>
+      <view class="field">
+        <view class="field-label">账号</view>
+        <input class="input" value="{{username}}" data-key="username" bindinput="onInput" placeholder="请输入账号" />
+      </view>
+      <view class="field">
+        <view class="field-label">密码</view>
+        <input class="input" password value="{{password}}" data-key="password" bindinput="onInput" bindconfirm="bindSubmit" placeholder="请输入密码" />
+      </view>
+      <button class="btn btn-primary login-btn" bindtap="bindSubmit" disabled="{{loading}}">绑定并登录</button>
+      <button class="btn login-btn" bindtap="cancelBind">返回</button>
+    </block>
+
+    <view class="error" wx:if="{{error}}">{{error}}</view>
+  </view>
+  <view class="login-beian" wx:if="{{icpNo || pseNo}}"><view wx:if="{{icpNo}}">{{icpNo}}</view><view wx:if="{{pseNo}}">{{pseNo}}</view></view>
+</view>

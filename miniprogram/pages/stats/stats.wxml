@@ -1,0 +1,28 @@
+<view class="page">
+  <view class="stat-grid" wx:if="{{stats}}">
+    <view class="stat"><view class="stat-label">今日收入</view><view class="stat-value num">{{stats.today_income}}</view></view>
+    <view class="stat"><view class="stat-label">今日入场</view><view class="stat-value num">{{stats.today_entries}}</view></view>
+    <view class="stat"><view class="stat-label">即将到期卡</view><view class="stat-value num">{{stats.expiring}}</view></view>
+    <view class="stat"><view class="stat-label">今日开卡续费充值</view><view class="stat-value num" style="font-size:28rpx">{{stats.today_gross}}</view></view>
+  </view>
+
+  <view class="card">
+    <view class="card-title">近 14 天客流</view>
+    <view class="chart">
+      <view class="bar-col" wx:for="{{checkins}}" wx:key="label">
+        <view class="bar-wrap"><view class="bar" style="height: {{item.h}}%"></view></view>
+        <view class="bar-label">{{item.label}}</view>
+      </view>
+    </view>
+  </view>
+
+  <view class="card" wx:if="{{canViewBreakdown}}">
+    <view class="card-title">近 30 日卡种净收构成</view>
+    <view class="hb-row" wx:for="{{breakdown}}" wx:key="label">
+      <view class="hb-label">{{item.label}}</view>
+      <view class="hb-track"><view class="hb-fill" style="width: {{item.w}}%; background: {{item.color}}"></view></view>
+      <view class="hb-val num">{{item.amount}}</view>
+    </view>
+    <view class="empty" wx:if="{{!breakdown.length}}">暂无数据</view>
+  </view>
+</view>

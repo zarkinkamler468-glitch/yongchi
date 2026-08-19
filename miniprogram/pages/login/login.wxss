@@ -1,0 +1,49 @@
+.login-page {
+  min-height: 100vh;
+  display: flex; align-items: center; justify-content: center;
+  padding: 40rpx 40rpx 150rpx; position:relative;
+  background:
+    radial-gradient(900rpx 700rpx at 12% -8%, #7dd3fc 0%, transparent 55%),
+    radial-gradient(900rpx 700rpx at 105% 12%, #c4b5fd 0%, transparent 55%),
+    linear-gradient(150deg, #0f2f5e 0%, #1e40af 45%, #2563eb 100%);
+}
+.login-bg { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; }
+.login-shade { position: absolute; inset: 0; z-index: 1; background: linear-gradient(180deg, rgba(6,24,55,.18), rgba(6,24,55,.56)); }
+.login-card {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 32rpx;
+  padding: 56rpx 44rpx;
+  box-shadow: 0 30rpx 80rpx rgba(15, 23, 42, 0.35);
+  text-align: center; position: relative; z-index: 2;
+}
+.logo {
+  width: 120rpx; height: 120rpx; line-height: 120rpx; margin: 0 auto 20rpx;
+  font-size: 60rpx; border-radius: 30rpx;
+  background: linear-gradient(135deg, #2563eb, #0ea5e9);
+  box-shadow: 0 14rpx 30rpx rgba(37, 99, 235, 0.35);
+}
+.logo-image { width: 100%; height: 100%; border-radius: 30rpx; display: block; }
+.title { font-size: 36rpx; font-weight: 700; color: #1e293b; margin-bottom: 8rpx; }
+.sub { font-size: 24rpx; color: #64748b; margin-bottom: 40rpx; }
+.login-card .field { text-align: left; }
+.captcha-row { display: flex; gap: 16rpx; align-items: center; }
+.captcha-row .input { flex: 1; }
+.captcha-img { width: 220rpx; height: 76rpx; background: #fff; border-radius: 12rpx; }
+.error {
+  background: rgba(239, 68, 68, 0.12); color: #b91c1c;
+  padding: 16rpx 20rpx; border-radius: 14rpx;
+  margin-bottom: 24rpx; font-size: 24rpx; text-align: left;
+}
+.login-btn { width: 100%; margin-top: 16rpx; }
+.divider {
+  text-align: center; color: #94a3b8; font-size: 22rpx;
+  margin: 28rpx 0 16rpx; position: relative;
+}
+.divider::before, .divider::after {
+  content: ''; position: absolute; top: 50%; width: 26%; height: 1rpx; background: #e2e8f0;
+}
+.divider::before { left: 0; }
+.divider::after { right: 0; }
+.sub { margin-bottom: 20rpx; }
+.login-beian { position:absolute; z-index:2; left:40rpx; right:40rpx; bottom:42rpx; text-align:center; color:rgba(255,255,255,.82); font-size:20rpx; line-height:1.8; text-shadow:0 2rpx 6rpx rgba(0,0,0,.35); }

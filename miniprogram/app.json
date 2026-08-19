@@ -1,0 +1,38 @@
+{
+  "pages": [
+    "pages/login/login",
+    "pages/index/index",
+    "pages/cashier/cashier",
+    "pages/members/members",
+    "pages/member-detail/member-detail",
+    "pages/checkin/checkin",
+    "pages/shifts/shifts",
+    "pages/stats/stats",
+    "pages/orders/orders",
+    "pages/refunds/refunds",
+    "pages/profile/profile"
+  ],
+  "window": {
+    "navigationBarBackgroundColor": "#f6f9ff",
+    "navigationBarTitleText": "游泳馆管理",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#f6f9ff",
+    "backgroundTextStyle": "light"
+  },
+  "tabBar": {
+    "color": "#94a3b8",
+    "selectedColor": "#2563eb",
+    "backgroundColor": "#ffffff",
+    "borderStyle": "white",
+    "list": [
+      { "pagePath": "pages/index/index", "text": "概览", "iconPath": "assets/icons/home.png", "selectedIconPath": "assets/icons/home-active.png" },
+      { "pagePath": "pages/cashier/cashier", "text": "收银", "iconPath": "assets/icons/cashier.png", "selectedIconPath": "assets/icons/cashier-active.png" },
+      { "pagePath": "pages/members/members", "text": "会员", "iconPath": "assets/icons/member.png", "selectedIconPath": "assets/icons/member-active.png" },
+      { "pagePath": "pages/profile/profile", "text": "我的", "iconPath": "assets/icons/profile.png", "selectedIconPath": "assets/icons/profile-active.png" }
+    ]
+  },
+  "style": "v2",
+  "lazyCodeLoading": "requiredComponents",
+  "sitemapLocation": "sitemap.json"
+}
+

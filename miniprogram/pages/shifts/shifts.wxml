@@ -1,0 +1,38 @@
+<view class="page">
+  <view class="card">
+    <view class="card-title">当前班次</view>
+    <block wx:if="{{current}}">
+      <view class="cur">开始于 {{current.startedText || ''}}</view>
+      <button class="btn btn-success" data-id="{{current.id}}" bindtap="openClose" style="margin-top:16rpx">交班对账</button>
+    </block>
+    <block wx:else>
+      <view class="text-muted">暂无进行中班次</view>
+      <button class="btn btn-primary" bindtap="start" style="margin-top:16rpx">开始班次</button>
+    </block>
+  </view>
+
+  <view class="card">
+    <view class="card-title">班次记录</view>
+    <view class="shift-row" wx:for="{{list}}" wx:key="id">
+      <view class="sr-head"><text>#{{item.id}} · {{item.staff_name}}</text><text class="badge {{item.status==='active'?'badge-green':'badge-gray'}}">{{item.statusText}}</text></view>
+      <view class="sr-sub">{{item.startedText}} ~ {{item.endedText}}</view>
+      <view class="sr-sub">应交现金 {{item.cashShould}} · 实点 {{item.actualText}} · 差额 {{item.diffText}}</view>
+    </view>
+    <view class="empty" wx:if="{{!list.length}}">暂无班次</view>
+  </view>
+
+  <!-- 交班弹层 -->
+  <view class="mask" wx:if="{{showClose}}" bindtap="closeSheet"></view>
+  <view class="sheet" wx:if="{{showClose}}">
+    <view class="sheet-title">交班对账</view>
+    <view class="sum" wx:if="{{summary}}">
+      <view class="sum-item"><text>本班收入</text><text class="num">{{summary.total_income}}</text></view>
+      <view class="sum-item"><text>本班退款</text><text class="num">{{summary.total_refund}}</text></view>
+      <view class="sum-item"><text>应交现金</text><text class="num">{{summary.cash_should}}</text></view>
+    </view>
+    <input class="input" type="digit" value="{{actualCash}}" data-key="actualCash" bindinput="onInput" placeholder="实点现金" />
+    <view class="diff">现金差额：{{diff}}</view>
+    <input class="input" value="{{note}}" data-key="note" bindinput="onInput" placeholder="差额说明（差额不为 0 必填）" />
+    <button class="btn btn-primary" bindtap="confirmClose">确认交班</button>
+  </view>
+</view>

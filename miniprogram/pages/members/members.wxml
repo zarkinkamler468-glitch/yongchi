@@ -1,0 +1,23 @@
+<view class="page">
+  <view class="search-bar">
+    <input class="input search-input" placeholder="搜索姓名 / 会员号 / 手机号" value="{{keyword}}" bindinput="onSearchInput" />
+    <picker class="type-picker" range="{{statuses}}" value="{{statusIndex}}" bindchange="onStatus">
+      <view class="picker">{{statuses[statusIndex]}}</view>
+    </picker>
+  </view>
+
+  <view class="member-list">
+    <view class="member-card" wx:for="{{list}}" wx:key="id" data-id="{{item.id}}" bindtap="goDetail">
+      <view class="member-head">
+        <view class="member-name">{{item.name}}<text class="gender" wx:if="{{item.genderText !== '—'}}">{{item.genderText}}</text></view>
+        <view class="badge badge-{{item.statusClass}}">{{item.statusText}}</view>
+      </view>
+      <view class="member-no">{{item.member_no}} · {{item.phone || '无电话'}}</view>
+      <view class="member-foot">
+        <view class="member-tags" wx:if="{{item.tagsText}}">{{item.tagsText}}</view>
+        <view class="member-cards">{{item.card_count}} 张卡</view>
+      </view>
+    </view>
+    <view class="empty" wx:if="{{!loading && !list.length}}">暂无匹配会员</view>
+  </view>
+</view>

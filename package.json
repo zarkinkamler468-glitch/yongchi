@@ -1,0 +1,20 @@
+{
+  "name": "pool-management-system",
+  "version": "1.0.0",
+  "description": "游泳池管理系统（会员 / 售票计次 / 课程教练 / 营收统计）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "keywords": [
+    "swimming-pool",
+    "management",
+    "sqlite"
+  ],
+  "license": "MIT",
+  "dependencies": {}
+}

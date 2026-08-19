@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>游泳池管理系统</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- 毛玻璃氛围背景 -->
+  <div class="bg-decor" aria-hidden="true">
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    <div class="blob blob-3"></div>
+  </div>
+
+  <!-- 登录页 -->
+  <div class="login-screen" id="loginScreen" hidden>
+    <form class="login-card" id="loginForm">
+      <div class="login-logo" id="loginLogo">🏊</div>
+      <h2 class="login-title" id="loginTitle">游泳池管理系统</h2>
+      <p class="login-sub" id="loginStoreName"></p>
+      <div class="field">
+        <label>账号</label>
+        <input class="input" id="loginUsername" autocomplete="username" placeholder="请输入账号">
+      </div>
+      <div class="field">
+        <label>密码</label>
+        <input class="input" type="password" id="loginPassword" autocomplete="current-password" placeholder="请输入密码">
+      </div>
+      <div class="field">
+        <label>验证码</label>
+        <div class="captcha-row">
+          <input class="input" id="loginCaptcha" placeholder="验证码" maxlength="4">
+          <div class="captcha-img" id="captchaImg" title="点击换一张"></div>
+        </div>
+      </div>
+      <div class="login-options">
+        <label class="remember"><input type="checkbox" id="rememberPwd"> 记住密码</label>
+      </div>
+      <div class="login-error" id="loginError" hidden></div>
+      <button class="btn btn-primary btn-block" type="submit">登 录</button>
+    </form>
+    <div class="login-footer" id="loginFooter"></div>
+  </div>
+
+  <div class="app" id="app" hidden>
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-logo" id="brandLogo">🏊</div>
+        <div class="brand-text">
+          <div class="brand-name" id="brandName">游泳馆管理</div>
+          <div class="brand-sub">纯会员制后台</div>
+        </div>
+      </div>
+      <nav class="nav" id="nav">
+        <a href="#/dashboard" class="nav-item" data-view="dashboard" title="首页总览"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></span><span class="nav-label">首页总览</span></a>
+        <a href="#/members" class="nav-item" data-view="members" data-roles="boss,frontdesk" title="会员管理"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span><span class="nav-label">会员管理</span></a>
+        <a href="#/card-products" class="nav-item" data-view="card-products" data-roles="boss" title="卡项管理"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg></span><span class="nav-label">卡项管理</span></a>
+        <a href="#/member-cards" class="nav-item" data-view="member-cards" title="会员卡账户"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2z"/><line x1="13" y1="5" x2="13" y2="19"/></svg></span><span class="nav-label">会员卡账户</span></a>
+        <a href="#/checkin" class="nav-item" data-view="checkin" data-roles="boss,frontdesk" title="入场核销台"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></span><span class="nav-label">入场核销台</span></a>
+        <a href="#/cashier" class="nav-item" data-view="cashier" data-roles="boss,frontdesk" title="收银台"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg></span><span class="nav-label">收银台</span></a>
+        <a href="#/orders" class="nav-item" data-view="orders" title="收银流水"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span><span class="nav-label">收银流水</span></a>
+        <a href="#/refunds" class="nav-item" data-view="refunds" data-roles="boss,finance" title="退款审批"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></span><span class="nav-label">退款审批</span></a>
+        <a href="#/shifts" class="nav-item" data-view="shifts" title="交班对账"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span><span class="nav-label">交班对账</span></a>
+        <a href="#/closings" class="nav-item" data-view="closings" data-roles="boss,finance" title="日结管理"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></span><span class="nav-label">日结管理</span></a>
+        <a href="#/reports" class="nav-item" data-view="reports" data-roles="boss,finance" title="报表中心"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></span><span class="nav-label">报表中心</span></a>
+        <a href="#/staff-performance" class="nav-item" data-view="staff-performance" data-roles="boss,finance" title="员工绩效"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5"/><path d="M4 19h16"/><path d="m7 15 3-4 3 2 4-6"/></svg></span><span class="nav-label">员工绩效</span></a>
+        <a href="#/staff" class="nav-item" data-view="staff" data-roles="boss" title="员工权限"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span><span class="nav-label">员工权限</span></a>
+        <a href="#/logs" class="nav-item" data-view="logs" data-roles="boss" title="操作日志"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="13" y2="16"/></svg></span><span class="nav-label">操作日志</span></a>
+        <a href="#/settings" class="nav-item" data-view="settings" data-roles="boss" title="系统设置"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></span><span class="nav-label">系统设置</span></a>
+        <a href="#/sms-settings" class="nav-item" data-view="sms-settings" data-roles="admin" title="短信通知配置"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg></span><span class="nav-label">短信通知</span></a>
+      </nav>
+      <div class="sidebar-footer">v0.5 · 纯会员制</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <h1 class="page-title" id="pageTitle">首页总览</h1>
+        <div class="topbar-right">
+          <span class="store-name" id="storeName"></span>
+          <span class="today" id="todayLabel"></span>
+          <span class="user-chip" id="userChip"></span>
+          <button class="btn btn-sm btn-outline" id="logoutBtn" data-action="logout">退出</button>
+        </div>
+      </header>
+
+      <section class="content">
+        <div class="view" id="view-dashboard"></div>
+        <div class="view" id="view-members"></div>
+        <div class="view" id="view-card-products"></div>
+        <div class="view" id="view-member-cards"></div>
+        <div class="view" id="view-checkin"></div>
+        <div class="view" id="view-cashier"></div>
+        <div class="view" id="view-orders"></div>
+        <div class="view" id="view-refunds"></div>
+        <div class="view" id="view-shifts"></div>
+        <div class="view" id="view-closings"></div>
+        <div class="view" id="view-reports"></div>
+        <div class="view" id="view-staff-performance"></div>
+        <div class="view" id="view-staff"></div>
+        <div class="view" id="view-logs"></div>
+        <div class="view" id="view-settings"></div>
+        <div class="view" id="view-sms-settings"></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 模态框 -->
+  <div class="modal-overlay" id="modalOverlay" hidden>
+    <div class="modal" id="modalBox" role="dialog" aria-modal="true"></div>
+  </div>
+
+  <!-- 轻提示 -->
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

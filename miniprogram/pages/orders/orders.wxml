@@ -1,0 +1,20 @@
+<view class="page">
+  <view class="tabs"><view class="tab {{scope==='income'?'active':''}}" data-scope="income" bindtap="setScope">收入</view><view class="tab {{scope==='refund'?'active':''}}" data-scope="refund" bindtap="setScope">退款</view><view class="tab {{scope==='all'?'active':''}}" data-scope="all" bindtap="setScope">全部</view></view>
+  <view class="card filters">
+    <input class="input" value="{{search}}" bindinput="onSearch" placeholder="搜索会员姓名 / 手机号 / 会员编号" />
+    <view class="filter-row"><picker class="filter-picker" range="{{['全部类型','开卡','续费','储值充值','退款']}}" value="{{typeIndex}}" bindchange="onType"><view class="picker">{{typeLabel || '全部类型'}}</view></picker><picker class="filter-picker" range="{{['全部状态','已支付','部分退款','已退款','待审批','已作废']}}" value="{{statusIndex}}" bindchange="onStatus"><view class="picker">{{statusLabel || '全部状态'}}</view></picker></view>
+    <view class="filter-row"><picker class="filter-picker" mode="date" value="{{from}}" bindchange="onFrom"><view class="picker">{{from || '开始日期'}}</view></picker><picker class="filter-picker" mode="date" value="{{to}}" bindchange="onTo"><view class="picker">{{to || '结束日期'}}</view></picker></view>
+    <view class="filter-actions"><button class="btn btn-ghost" bindtap="resetFilter">重置</button><button class="btn btn-primary" bindtap="applyFilter">查询</button></view>
+  </view>
+  <view class="card">
+    <view class="flow-summary"><view><text class="summary-label">当前分类</text><text class="summary-value">{{scopeLabel}}</text></view><view><text class="summary-label">记录数</text><text class="summary-value">{{list.length}}</text></view></view>
+    <view class="card-title">收银流水</view>
+    <view class="ord-row" wx:for="{{list}}" wx:key="id">
+      <view class="ord-head"><text class="ord-no">{{item.order_no}}</text><text class="badge badge-{{item.statusClass}}">{{item.statusText}}</text></view>
+      <view class="ord-sub">{{item.typeText}} · {{item.member_name}} · {{item.member_no}} · {{item.timeText}}</view>
+      <view class="ord-amt num">{{item.amountText}}</view>
+      <view class="ord-ref" wx:if="{{item.order_type === 'refund'}}">原订单 #{{item.original_order_id}}</view>
+    </view>
+    <view class="empty" wx:if="{{!list.length}}">暂无流水</view>
+  </view>
+</view>

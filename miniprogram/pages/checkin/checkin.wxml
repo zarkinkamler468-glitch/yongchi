@@ -1,0 +1,25 @@
+<view class="page">
+  <view class="card">
+    <view class="card-title">入场核销</view>
+    <view class="field"><view class="field-label">卡号 / 手机号 / 会员编号</view><input class="input big" value="{{keyword}}" data-key="keyword" bindinput="onInput" bindconfirm="submit" placeholder="输入后回车核销" /></view>
+    <view class="row">
+      <view class="field" style="flex:1;margin-right:12rpx"><view class="field-label">通道号</view><input class="input" value="{{gate_no}}" data-key="gate_no" bindinput="onInput" /></view>
+      <view class="field" style="flex:1"><view class="field-label">同行人数</view><input class="input" type="number" value="{{people}}" data-key="people" bindinput="onInput" /></view>
+    </view>
+    <button class="btn btn-primary" bindtap="submit">核销入场</button>
+  </view>
+
+  <view class="card" wx:if="{{preview}}">
+      <view class="res-ok">待确认会员信息</view>
+      <view class="res-name">{{preview.name}}（{{preview.member_no}}）</view>
+      <view class="res-grid">
+        <view class="res-item"><view class="res-label">卡项</view><view class="res-value">{{preview.card_name}}</view></view>
+        <view class="res-item"><view class="res-label">本次扣次数</view><view class="res-value num">{{preview.deduct_uses}}</view></view>
+        <view class="res-item"><view class="res-label">本次扣金额</view><view class="res-value num">{{preview.deduct_amount}}</view></view>
+        <view class="res-item"><view class="res-label">有效期</view><view class="res-value">{{preview.end_at}}</view></view>
+      </view>
+      <button class="btn btn-primary" bindtap="confirm" style="margin-top:24rpx">确认核销并扣减</button>
+  </view>
+  <view class="card" wx:if="{{result}}"><view class="res-ok" wx:if="{{result.ok}}">✓ {{result.error}}</view><view class="res-fail" wx:else>{{result.error}}</view>
+  </view>
+</view>

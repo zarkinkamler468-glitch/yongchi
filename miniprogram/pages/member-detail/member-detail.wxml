@@ -1,0 +1,63 @@
+<view class="page" wx:if="{{member}}">
+  <view class="card head">
+    <view class="head-top">
+      <view class="head-name">{{member.name}}</view>
+      <view class="badge badge-{{member.statusClass}}">{{member.statusText}}</view>
+    </view>
+    <view class="head-no">{{member.member_no}} · {{member.phone || '无电话'}}</view>
+    <view class="head-tags" wx:if="{{member.tagsText}}">标签：{{member.tagsText}}</view>
+  </view>
+
+  <view class="actions">
+    <button class="btn btn-success act" bindtap="doCheckin">入场核销</button>
+  </view>
+
+  <view class="card">
+    <view class="card-title">会员卡账户</view>
+    <view class="card-item" wx:for="{{cards}}" wx:key="id">
+      <view class="ci-head">
+        <view class="ci-name">{{item.card_name || item.typeText}} · {{item.card_no}}</view>
+        <view class="badge badge-{{item.statusClass}}">{{item.statusText}}</view>
+      </view>
+      <view class="ci-sub">{{item.assetText}}{{item.end_at ? ' · 有效期至 ' + item.end_at : ''}}</view>
+      <button class="btn btn-sm" wx:if="{{item.canRecharge}}" data-id="{{item.id}}" bindtap="openRecharge" style="margin-top:10rpx">充值</button>
+    </view>
+    <view class="empty" wx:if="{{!cards.length}}">暂无会员卡</view>
+  </view>
+
+  <view class="card">
+    <view class="card-title">最近入场</view>
+    <view class="rec-row" wx:for="{{entries}}" wx:key="id">
+      <view class="rec-info"><view class="rec-name">{{item.timeText}}</view></view>
+      <view class="badge {{item.resultOk ? 'badge-green' : 'badge-red'}}">{{item.resultOk ? '成功' : '失败'}}</view>
+    </view>
+    <view class="empty" wx:if="{{!entries.length}}">暂无记录</view>
+  </view>
+
+  <view class="card">
+    <view class="card-title">最近订单</view>
+    <view class="rec-row" wx:for="{{orders}}" wx:key="id">
+      <view class="rec-info"><view class="rec-name">{{item.order_no}} · {{item.typeText}}</view></view>
+      <view class="rec-amount">{{item.amountText}} · {{item.statusText}}</view>
+    </view>
+    <view class="empty" wx:if="{{!orders.length}}">暂无订单</view>
+  </view>
+
+  <!-- 充值弹层 -->
+  <view class="mask" wx:if="{{showRecharge}}" bindtap="closeRecharge"></view>
+  <view class="sheet" wx:if="{{showRecharge}}">
+    <view class="sheet-title">储值充值</view>
+    <input class="input" type="digit" value="{{rechargeAmount}}" bindinput="onAmount" placeholder="请输入充值金额" />
+    <picker range="{{pays}}" value="{{payIndex}}" bindchange="onPay"><view class="picker">{{pays[payIndex]}}</view></picker>
+    <button class="btn btn-primary sheet-btn" bindtap="confirmRecharge">确认充值</button>
+  </view>
+  <view class="mask" wx:if="{{checkinPreview}}" bindtap="cancelCheckin"></view>
+  <view class="sheet" wx:if="{{checkinPreview}}">
+    <view class="sheet-title">确认入场核销</view>
+    <view class="preview-line">卡项：{{checkinPreview.cardName}}</view>
+    <view class="preview-line" wx:if="{{checkinPreview.cardType === 'count'}}">本次扣减：{{checkinPreview.uses}} 次（当前剩余 {{checkinPreview.remaining}} 次）</view>
+    <view class="preview-line" wx:if="{{checkinPreview.cardType === 'stored'}}">本次扣减：{{checkinPreview.amount}}（当前余额 {{checkinPreview.balance}}）</view>
+    <view class="preview-line" wx:if="{{checkinPreview.cardType === 'month' || checkinPreview.cardType === 'year'}}">本次不扣次，确认会员信息后入场</view>
+    <button class="btn btn-primary sheet-btn" bindtap="confirmCheckin">确认核销并扣减</button>
+  </view>
+</view>

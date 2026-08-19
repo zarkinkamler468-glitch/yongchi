@@ -1,0 +1,15 @@
+.page { padding: 24rpx; }
+.card { margin-bottom: 20rpx; }
+.card-title { font-size: 28rpx; font-weight: 700; margin-bottom: 16rpx; }
+.cur { font-size: 28rpx; }
+.shift-row { padding: 18rpx 0; border-bottom: 1rpx solid rgba(15,23,42,0.05); }
+.shift-row:last-child { border-bottom: none; }
+.sr-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
+.sr-sub { font-size: 24rpx; color: #64748b; margin-top: 6rpx; }
+.empty { text-align: center; color: #94a3b8; padding: 30rpx 0; font-size: 24rpx; }
+.sheet { position: fixed; left: 40rpx; right: 40rpx; top: 50%; transform: translateY(-50%); z-index: 95; background: #fff; border-radius: 24rpx; padding: 32rpx; }
+.sheet-title { font-size: 30rpx; font-weight: 700; margin-bottom: 20rpx; text-align: center; }
+.sum { background: #f8fafc; border-radius: 14rpx; padding: 16rpx; margin-bottom: 16rpx; }
+.sum-item { display: flex; justify-content: space-between; font-size: 26rpx; padding: 6rpx 0; }
+.sheet .input { margin-bottom: 16rpx; }
+.diff { font-size: 28rpx; font-weight: 700; color: #dc2626; margin-bottom: 12rpx; }

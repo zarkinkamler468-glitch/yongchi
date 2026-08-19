@@ -1,0 +1,12 @@
+.page { padding: 24rpx; }
+.card { margin-bottom: 20rpx; }
+.card-title { font-size: 28rpx; font-weight: 700; margin-bottom: 16rpx; }
+.row { display: flex; }
+.big { font-size: 34rpx; font-weight: 600; }
+.res-ok { font-size: 36rpx; font-weight: 800; color: #16a34a; margin-bottom: 12rpx; }
+.res-fail { font-size: 30rpx; font-weight: 700; color: #dc2626; }
+.res-name { font-size: 30rpx; font-weight: 700; margin-bottom: 16rpx; }
+.res-grid { display: flex; flex-wrap: wrap; gap: 12rpx; }
+.res-item { flex: 1; min-width: 300rpx; background: #f8fafc; border-radius: 14rpx; padding: 18rpx; }
+.res-label { font-size: 22rpx; color: #64748b; }
+.res-value { font-size: 28rpx; font-weight: 700; margin-top: 6rpx; }
