@@ -22,8 +22,9 @@
   </view>
 
   <view class="card">
-    <view class="field"><view class="field-label">会员</view><view class="member-search"><input class="input" value="{{memberQuery}}" bindinput="searchMember" placeholder="搜索姓名 / 会员号 / 手机号" /><view class="search-mark">⌕</view></view><view class="selected-hint" wx:if="{{selectedMember}}">已选择：{{selectedMember.name}}（{{selectedMember.member_no}}）</view><view class="new-member-link" bindtap="chooseNewMember">＋ 新建会员</view></view>
-    <block wx:if="{{memberIndex === 0}}">
+    <view class="field" wx:if="{{tab !== 'open'}}"><view class="field-label">查询已有会员</view><view class="member-search"><input class="input" value="{{memberQuery}}" bindinput="searchMember" placeholder="搜索姓名 / 会员号 / 手机号" /><view class="search-mark">⌕</view></view><view class="selected-hint" wx:if="{{selectedMember}}">已选择：{{selectedMember.name}}（{{selectedMember.member_no}}）</view></view>
+    <view class="selected-hint" wx:if="{{tab === 'open'}}">开卡将同时建立新会员档案</view>
+    <block wx:if="{{tab === 'open'}}">
       <view class="row">
         <view class="field" style="flex:1;margin-right:12rpx"><view class="field-label">姓名 *</view><input class="input" value="{{newName}}" data-key="newName" bindinput="onInput" placeholder="姓名" /></view>
         <view class="field" style="flex:1"><view class="field-label">手机号</view><input class="input" value="{{newPhone}}" data-key="newPhone" bindinput="onInput" placeholder="手机号" /></view>
@@ -70,5 +71,5 @@
     <button class="btn btn-primary" bindtap="submit">确认收款</button>
   </view>
   </block>
-  <view class="picker-mask" wx:if="{{showMemberPicker}}" bindtap="closeMemberPicker"></view><view class="member-sheet" wx:if="{{showMemberPicker}}"><view class="sheet-title">查询会员</view><view class="member-option new" bindtap="chooseNewMember">＋ 新建会员</view><view class="member-option" wx:for="{{memberResults}}" wx:key="id" data-id="{{item.id}}" bindtap="chooseMember">{{item.name}} · {{item.member_no}}<text>{{item.phone || ''}}</text></view><view class="empty" wx:if="{{!memberQuery}}">请输入姓名、手机号或会员编号查询</view><view class="empty" wx:elif="{{!memberResults.length}}">没有找到匹配会员</view></view>
+  <view class="picker-mask" wx:if="{{showMemberPicker}}" bindtap="closeMemberPicker"></view><view class="member-sheet" wx:if="{{showMemberPicker}}"><view class="sheet-title">查询会员</view><view class="member-option" wx:for="{{memberResults}}" wx:key="id" data-id="{{item.id}}" bindtap="chooseMember">{{item.name}} · {{item.member_no}}<text>{{item.phone || ''}}</text></view><view class="empty" wx:if="{{!memberQuery}}">请输入姓名、手机号或会员编号查询</view><view class="empty" wx:elif="{{!memberResults.length}}">没有找到匹配会员</view></view>
 </view>

@@ -24,9 +24,9 @@ function list({ query }) {
   const args = [];
   const search = (query.get('search') || '').trim();
   if (search) {
-    where.push('(name LIKE ? OR member_no LIKE ? OR phone LIKE ?)');
-    const like = `%${search}%`;
-    args.push(like, like, like);
+    const normalized = normalizePhone(search);
+    where.push('(name LIKE ? OR REPLACE(REPLACE(member_no, \' \', \'\'), \'-\', \'\') LIKE ? OR REPLACE(REPLACE(phone, \' \', \'\'), \'-\', \'\') LIKE ?)');
+    args.push(`%${search}%`, `%${normalized}%`, `%${normalized}%`);
   }
   const status = query.get('status');
   if (status) { where.push('status = ?'); args.push(status); }
@@ -52,17 +52,7 @@ function get({ params }) {
   const cards = db.prepare('SELECT mc.*, cp.name AS card_name FROM member_cards mc LEFT JOIN card_products cp ON cp.id = mc.card_product_id WHERE mc.member_id = ? ORDER BY mc.id DESC').all(m.id);
   const entries = db.prepare('SELECT * FROM entries WHERE member_id = ? ORDER BY id DESC LIMIT 20').all(m.id);
   const orders = db.prepare('SELECT * FROM orders WHERE member_id = ? ORDER BY id DESC LIMIT 20').all(m.id);
-  const family = db.prepare(`
-    SELECT fr.*, m.name AS related_name, m.member_no AS related_no, m.phone AS related_phone
-    FROM family_relations fr JOIN members m ON m.id = fr.child_member_id
-    WHERE fr.parent_member_id = ? ORDER BY fr.id DESC
-  `).all(m.id);
-  const parents = db.prepare(`
-    SELECT fr.*, m.name AS related_name, m.member_no AS related_no, m.phone AS related_phone
-    FROM family_relations fr JOIN members m ON m.id = fr.parent_member_id
-    WHERE fr.child_member_id = ? ORDER BY fr.id DESC
-  `).all(m.id);
-  return ok({ member: decorate(m), cards, entries, orders, family, parents });
+  return ok({ member: decorate(m), cards, entries, orders });
 }
 
 // POST /api/members
@@ -114,34 +104,20 @@ function addTag({ params, body, req }) {
   const tag = (body.tag_name || '').trim();
   if (!tag) return fail(400, '标签不能为空');
   const exists = db.prepare('SELECT id FROM member_tags WHERE member_id = ? AND tag_name = ?').get(m.id, tag);
-  if (!exists) db.prepare('INSERT INTO member_tags(member_id, tag_name, created_at) VALUES (?, ?, ?)').run(m.id, tag, now());
-  return ok({ tags: tagsOf(m.id) });
+  if (!exists) {
+    db.prepare('INSERT INTO member_tags(member_id, tag_name, created_at) VALUES (?, ?, ?)').run(m.id, tag, now());
+    audit.record({ req, action: '添加会员标签', target_type: 'member', target_id: m.id, after: { tag_name: tag } });
+  }
+  const tags = db.prepare('SELECT id, tag_name FROM member_tags WHERE member_id = ? ORDER BY id').all(m.id);
+  return ok({ tags });
 }
 
-function removeTag({ params }) {
+function removeTag({ params, req }) {
+  const tag = db.prepare('SELECT id, tag_name FROM member_tags WHERE id = ? AND member_id = ?').get(params.tagId, params.id);
+  if (!tag) return fail(404, '标签不存在或已删除');
   db.prepare('DELETE FROM member_tags WHERE id = ? AND member_id = ?').run(params.tagId, params.id);
+  audit.record({ req, action: '删除会员标签', target_type: 'member', target_id: Number(params.id), before: { tag_name: tag.tag_name } });
   return ok({});
 }
 
-// 家庭关系
-function addFamily({ params, body, req }) {
-  const parentId = params.id;
-  const childId = Number(body.child_member_id);
-  if (!childId || childId === Number(parentId)) return fail(400, '请选择正确的儿童会员');
-  const parent = db.prepare('SELECT * FROM members WHERE id = ?').get(parentId);
-  const child = db.prepare('SELECT * FROM members WHERE id = ?').get(childId);
-  if (!parent || !child) return fail(404, '会员不存在');
-  const exists = db.prepare('SELECT id FROM family_relations WHERE parent_member_id = ? AND child_member_id = ?').get(parentId, childId);
-  if (exists) return fail(400, '该关系已存在');
-  db.prepare('INSERT INTO family_relations(parent_member_id, child_member_id, relation, created_at) VALUES (?, ?, ?, ?)')
-    .run(parentId, childId, body.relation || '其他', now());
-  audit.record({ req, action: '新增家庭关系', target_type: 'member', target_id: parentId, after: { child_member_id: childId, relation: body.relation || '其他' } });
-  return ok({});
-}
-
-function removeFamily({ params }) {
-  db.prepare('DELETE FROM family_relations WHERE id = ?').run(params.relId);
-  return ok({});
-}
-
-module.exports = { list, get, create, update, addTag, removeTag, addFamily, removeFamily };
+module.exports = { list, get, create, update, addTag, removeTag };

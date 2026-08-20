@@ -410,16 +410,6 @@ async function openMember(id) {
           <button class="btn btn-sm btn-outline" data-action="cardExtend" data-id="${c.id}">延期</button>
           <button class="btn btn-sm btn-outline" data-action="cardTransfer" data-id="${c.id}">转卡</button>
           <button class="btn btn-sm btn-danger" data-action="cardVoid" data-id="${c.id}">作废</button></td>` : ''}</tr>`).join('') : '<tr><td colspan="7" class="empty">暂无会员卡</td></tr>'}</tbody></table></div>
-        <div class="card-title">家庭关系</div>
-        <div class="flex mb-16" style="flex-wrap:wrap">
-          ${d.family.map((f) => `<span class="badge badge-amber" style="margin-right:6px">${esc(f.relation)}：${esc(f.related_name)}（${esc(f.related_no)}）<button style="border:none;background:none;cursor:pointer" data-action="removeFamily" data-rel="${f.id}">×</button></span>`).join('') || '<span class="text-muted">无关联儿童</span>'}
-          ${d.parents.map((f) => `<span class="badge badge-gray" style="margin-right:6px">家长：${esc(f.related_name)}（${esc(f.related_no)}）</span>`).join('')}
-        </div>
-        <div class="flex mb-16">
-          <select class="select" id="familyChild" style="flex:1"><option value="">选择儿童会员…</option></select>
-          <select class="select" id="familyRel"><option value="父亲">父亲</option><option value="母亲">母亲</option><option value="其他">其他</option></select>
-          <button class="btn btn-sm btn-outline" data-action="addFamily" data-id="${m.id}">关联</button>
-        </div>
         <div class="card-title">最近入场</div>
         <div class="table-wrap mb-16"><table><thead><tr><th>时间</th><th>方式</th><th>扣减</th><th>结果</th></tr></thead>
         <tbody>${d.entries.length ? d.entries.map((e) => `<tr><td class="num">${esc((e.entry_at || '').replace('T', ' ').slice(0, 16))}</td><td>${ENTRY_CHARGE[e.charge_type] || '—'}</td><td class="num">${e.deducted_uses ? e.deducted_uses + ' 次' : e.deducted_amount ? fmtMoney(e.deducted_amount) : '—'}</td><td>${e.result === 'success' ? '<span class="badge badge-green">成功</span>' : '<span class="badge badge-red">失败</span>'}</td></tr>`).join('') : '<tr><td colspan="4" class="empty">暂无</td></tr>'}</tbody></table></div>
@@ -428,16 +418,11 @@ async function openMember(id) {
         <tbody>${d.orders.length ? d.orders.map((o) => `<tr><td class="num">${esc(o.order_no)}</td><td>${orderTypeBadge(o.order_type)}</td><td class="num">${fmtMoney(o.paid_amount)}</td><td>${orderStatusBadge(o.status)}</td></tr>`).join('') : '<tr><td colspan="4" class="empty">暂无</td></tr>'}</tbody></table></div>
       </div>
       <div class="modal-foot"><button class="btn" data-action="closeModal">关闭</button></div>`, true);
-
-    const all = await api('/api/members');
-    $('#familyChild').innerHTML = '<option value="">选择儿童会员…</option>' + all.list.filter((x) => String(x.id) !== String(m.id)).map((x) => `<option value="${x.id}">${esc(x.name)}（${esc(x.member_no)}）</option>`).join('');
   } catch (e) { toast(e.message, 'error'); }
 }
 
 async function addTag(el) { try { await api(`/api/members/${el.dataset.id}/tags`, { body: { tag_name: $('#tagInput').value } }); toast('已添加'); openMember(el.dataset.id); } catch (e) { toast(e.message, 'error'); } }
 async function removeTag(el) { try { await api(`/api/members/${el.dataset.id}/tags/${el.dataset.tag}`, { method: 'DELETE' }); toast('已删除'); openMember(el.dataset.id); } catch (e) { toast(e.message, 'error'); } }
-async function addFamily(el) { try { await api(`/api/members/${el.dataset.id}/family`, { body: { child_member_id: Number($('#familyChild').value), relation: $('#familyRel').value } }); toast('已关联'); openMember(el.dataset.id); } catch (e) { toast(e.message, 'error'); } }
-async function removeFamily(el) { try { await api(`/api/family/${el.dataset.rel}`, { method: 'DELETE' }); toast('已删除'); } catch (e) { toast(e.message, 'error'); } }
 
 /* ============================= 卡项管理 ============================= */
 async function renderCardProducts() {
@@ -607,8 +592,7 @@ async function renderCashierForm(tab) {
     <div class="grid cols-2">
       <div class="card">
         <div class="card-title">会员与卡项</div>
-        <div class="field"><label>已有会员</label><input class="input" id="csMemberSearch" data-input="cashierMemberSearch" placeholder="输入姓名、手机号或会员编号查询"><div id="csMemberResults" class="search-results"></div><div id="csMemberSelected" class="text-muted mt-8"></div></div>
-        ${tab === 'open' ? '<button class="btn btn-sm btn-outline mb-16" data-action="cashierNewMember">新建会员</button>' : ''}
+        ${tab === 'open' ? '<div class="hint mb-16">开卡将同时建立新会员档案</div>' : '<div class="field"><label>查询已有会员</label><input class="input" id="csMemberSearch" data-input="cashierMemberSearch" placeholder="输入姓名、手机号或会员编号查询"><div id="csMemberResults" class="search-results"></div><div id="csMemberSelected" class="text-muted mt-8"></div></div>'}
         <div id="csNewMember"${state.cashierNewMember ? '' : ' hidden'}>
           <div class="form-row">
             <div class="field"><label>姓名 *</label><input class="input" id="csName"></div>
@@ -717,6 +701,7 @@ async function submitCashier() {
   const memberId = state.cashierMember?.id || '';
   const payable = cashierToPay();
   if (!(payable > 0)) { toast('实收金额必须大于 0'); return; }
+  if (tab === 'open' && !($('#csName')?.value || '').trim()) { toast('请填写新会员姓名'); return; }
   if (['renew', 'recharge'].includes(tab) && !memberId) { toast('请先查询并选择会员'); return; }
   const body = {
     order_type: tab,
@@ -950,7 +935,7 @@ async function renderClosings() {
       <div class="spacer"></div>
     </div>
     <div class="card"><div class="table-wrap"><table>
-      <thead><tr><th>营业日期</th><th>总收入</th><th>总退款</th><th>入场人次</th><th>新增会员</th><th>日结人</th><th>状态</th><th>操作</th></tr></thead>
+      <thead><tr><th>营业日期</th><th>净收入</th><th>总退款</th><th>入场人次</th><th>新增会员</th><th>日结人</th><th>状态</th><th>操作</th></tr></thead>
       <tbody id="closingsBody"></tbody></table></div></div>`;
   refreshClosings();
 }
@@ -970,7 +955,7 @@ async function openClosing(el) {
   openModal(`
     <div class="modal-head"><h3>日结 ${el.dataset.date}</h3><button class="modal-close" data-action="closeModal">×</button></div>
     <div class="modal-body"><div class="grid cols-4">
-      <div class="card stat"><span class="stat-label">收入</span><span class="stat-value num">${fmtMoney(c.total_income)}</span></div>
+      <div class="card stat"><span class="stat-label">净收入</span><span class="stat-value num">${fmtMoney(c.total_income)}</span></div>
       <div class="card stat"><span class="stat-label">退款</span><span class="stat-value num">${fmtMoney(c.total_refund)}</span></div>
       <div class="card stat"><span class="stat-label">入场</span><span class="stat-value num">${c.total_entries}</span></div>
       <div class="card stat"><span class="stat-label">新会员</span><span class="stat-value num">${c.new_members}</span></div>

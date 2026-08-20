@@ -5,9 +5,7 @@ Page({
   data: {
     mode: 'home', tab: 'open', showMemberPicker: false, memberQuery: '', selectedMember: null, memberResults: [],
     checkinKeyword: '', checkinPeople: 1, checkinResult: null, checkinPreview: null,
-    members: [],
     products: [], allProducts: [],
-    memberNames: ['新会员'],
     memberIndex: 0,
     newName: '', newPhone: '', newGender: 'unknown',
     productIndex: 0,
@@ -20,17 +18,13 @@ Page({
   },
   onShow() { this.loadBase(); },
   loadBase() {
-    Promise.all([request('/api/members?status=normal'), request('/api/card-products')]).then(([m, p]) => {
-      const members = m.list || [];
+    request('/api/card-products').then((p) => {
       const products = (p.list || []).filter((x) => x.enabled);
-      this.setData({
-        members, products, allProducts: products,
-        memberNames: ['新会员'].concat(members.map((x) => x.member_no + ' · ' + x.name))
-      });
+      this.setData({ products, allProducts: products });
       this.compute();
     }).catch((e) => toast(e.message));
   },
-  setTab(e) { this.setData({ mode: 'form', tab: e.currentTarget.dataset.tab, cardIndex: 0, cards: [], products: this.data.allProducts, productIndex: 0 }); this.compute(); },
+  setTab(e) { const tab = e.currentTarget.dataset.tab; this.setData({ mode: 'form', tab, memberIndex: 0, selectedMember: null, memberQuery: '', memberResults: [], cardIndex: 0, cards: [], cardOptions: [], products: this.data.allProducts, productIndex: 0 }); this.compute(); },
   openCashier(e) { this.setTab(e); },
   goHome() { this.setData({ mode: 'home' }); },
   closeMemberPicker() { this.setData({ showMemberPicker: false }); },
@@ -56,7 +50,7 @@ Page({
     clearTimeout(this._memberSearchTimer);
     if (!q) return;
     this._memberSearchTimer = setTimeout(() => {
-      const path = '/api/members?status=normal&search=' + encodeURIComponent(q.replace(/[\\s-]/g, ''));
+      const path = '/api/members?status=normal&search=' + encodeURIComponent(q);
       request(path).then((d) => {
         if (this.data.memberQuery !== q) return;
         this.setData({ memberResults: (d.list || []).slice(0, 30), showMemberPicker: true });
@@ -71,15 +65,10 @@ Page({
   },
   chooseNewMember() { this.setData({ memberIndex: 0, selectedMember: null, memberQuery: '', showMemberPicker: false, cards: [] }); },
   chooseMember(e) {
-    const m = this.data.members.find((x) => Number(x.id) === Number(e.currentTarget.dataset.id));
+    const m = this.data.memberResults.find((x) => Number(x.id) === Number(e.currentTarget.dataset.id));
     if (!m) return;
-    this.setData({ memberIndex: this.data.members.indexOf(m) + 1, selectedMember: m, memberQuery: `${m.member_no} · ${m.name}`, showMemberPicker: false });
+    this.setData({ memberIndex: 1, selectedMember: m, memberQuery: `${m.member_no} · ${m.name}`, showMemberPicker: false });
     if (['renew', 'recharge'].includes(this.data.tab)) this.loadCards(m.id);
-  },
-  pickMember(e) {
-    const idx = Number(e.detail.value);
-    this.setData({ memberIndex: idx, selectedMember: idx > 0 ? this.data.members[idx - 1] : null });
-    if (['renew', 'recharge'].includes(this.data.tab) && idx > 0) this.loadCards(this.data.members[idx - 1].id);
   },
   loadCards(memberId) {
     request('/api/member-cards?member_id=' + memberId).then((d) => {
@@ -113,12 +102,13 @@ Page({
     this.setData(patch);
   },
   submit() {
-    const { tab, members, memberIndex, newName, newPhone, newGender, products, productIndex, cards, cardIndex, amount, discount, payMethod, payAmount } = this.data;
-    const memberId = memberIndex > 0 ? members[memberIndex - 1].id : undefined;
+    const { tab, selectedMember, newName, newPhone, newGender, products, productIndex, cards, cardIndex, amount, discount, payMethod, payAmount } = this.data;
+    const memberId = tab === 'open' ? undefined : selectedMember && selectedMember.id;
     const selectedCard = cards[cardIndex];
     const payable = Number(payAmount);
     if (!(payable > 0)) { toast('实收金额必须大于 0'); return; }
-    if (!memberId && !newName.trim()) { toast('请选择会员或填写新会员姓名'); return; }
+    if (tab === 'open' && !newName.trim()) { toast('请填写新会员姓名'); return; }
+    if (['renew', 'recharge'].includes(tab) && !memberId) { toast('请先查询并选择会员'); return; }
     if (['renew', 'recharge'].includes(tab) && selectedCard && ['void', 'refunded'].includes(selectedCard.status)) { toast('已作废或退款的卡不可办理'); return; }
     const body = {
       order_type: tab,
@@ -134,7 +124,7 @@ Page({
     request('/api/orders', { data: body }).then((d) => {
       wx.hideLoading();
       wx.showModal({ title: '收款成功', content: fmtMoney(d.amount), showCancel: false, confirmText: '继续' });
-      this.setData({ memberIndex: 0, newName: '', newPhone: '', newGender: 'unknown', discount: '0', payManual: false, amount: '100', cards: [], cardIndex: 0 });
+      this.setData({ memberIndex: 0, selectedMember: null, memberQuery: '', memberResults: [], newName: '', newPhone: '', newGender: 'unknown', discount: '0', payManual: false, amount: '100', cards: [], cardOptions: [], cardIndex: 0 });
       this.loadBase();
     }).catch((e) => { wx.hideLoading(); toast(e.message); });
   }

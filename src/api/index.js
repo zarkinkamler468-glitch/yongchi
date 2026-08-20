@@ -43,10 +43,8 @@ function buildRouter() {
   get('/api/members/:id', members.get, { roles: FRONT });
   post('/api/members', members.create, { roles: FRONT, action: '会员建档', module: 'member', audit: false });
   put('/api/members/:id', members.update, { roles: FRONT, action: '编辑会员', module: 'member', audit: false });
-  post('/api/members/:id/tags', members.addTag, { roles: FRONT, action: '添加会员标签', module: 'member' });
-  del('/api/members/:id/tags/:tagId', members.removeTag, { roles: FRONT, action: '删除会员标签', module: 'member' });
-  post('/api/members/:id/family', members.addFamily, { roles: FRONT, action: '新增家庭关系', module: 'member', audit: false });
-  del('/api/family/:relId', members.removeFamily, { roles: FRONT, action: '删除家庭关系', module: 'member' });
+  post('/api/members/:id/tags', members.addTag, { roles: FRONT, action: '添加会员标签', module: 'member', audit: false });
+  del('/api/members/:id/tags/:tagId', members.removeTag, { roles: FRONT, action: '删除会员标签', module: 'member', audit: false });
 
   // 卡项（老板配置）
   get('/api/card-products', cards.listProducts);

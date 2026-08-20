@@ -79,14 +79,6 @@ CREATE TABLE IF NOT EXISTS members (
   updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS family_relations (
-  id               INTEGER PRIMARY KEY AUTOINCREMENT,
-  parent_member_id INTEGER NOT NULL,
-  child_member_id  INTEGER NOT NULL,
-  relation         TEXT NOT NULL DEFAULT '其他',      -- 父亲 / 母亲 / 其他
-  created_at       TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS member_tags (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   member_id  INTEGER NOT NULL,

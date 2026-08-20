@@ -95,6 +95,7 @@ function create({ body, req }) {
   try {
   const orderType = body.order_type;
   if (!['open', 'renew', 'recharge'].includes(orderType)) throw httpError(400, '无效的业务类型');
+  if (orderType === 'open' && body.member_id) throw httpError(400, '开卡请直接填写新会员资料，无需选择已有会员');
   const member = resolveMember(body);
   if (member.status === 'blacklist') throw httpError(400, '黑名单会员禁止办卡、续费');
   if (member.status === 'inactive') throw httpError(400, '会员已停用');
@@ -280,13 +281,16 @@ function refundApprove({ params, body, req }) {
       db.prepare("UPDATE member_cards SET status = 'refunded', remaining_uses = 0, balance = 0, updated_at = ? WHERE id = ?").run(ts, card.id);
     } else if (o.order_type === 'recharge' || card.card_type === 'stored') {
       db.prepare('UPDATE member_cards SET balance = MAX(0, balance - ?), updated_at = ? WHERE id = ?').run(amount, ts, card.id);
-    } else if (card.card_type === 'count' && o.order_type === 'renew') {
+    } else if (card.card_type === 'count' && ['open', 'renew'].includes(o.order_type)) {
       const grantedUses = Number(o.benefit_uses) || 0;
       if (grantedUses > 0 && Number(o.paid_amount) > 0) {
         // 按该订单的单次成交价收回次数：退款金额 ÷（订单实付 ÷ 赠送次数）。
-        // 次数不可为小数，存在零头时向上取整，避免少收回会员权益。
+        // 按累计退款计算目标扣减数，再减去此前已扣数，避免多次部分退款重复向上取整。
         const unitPrice = Number(o.paid_amount) / grantedUses;
-        const remove = Math.ceil(amount / unitPrice);
+        const previousRefunded = money(refundedTotal - amount);
+        const previousRemoved = Math.ceil(previousRefunded / unitPrice);
+        const targetRemoved = Math.ceil(refundedTotal / unitPrice);
+        const remove = Math.max(0, targetRemoved - previousRemoved);
         db.prepare('UPDATE member_cards SET remaining_uses = MAX(0, remaining_uses - ?), updated_at = ? WHERE id = ?').run(remove, ts, card.id);
       }
     }
