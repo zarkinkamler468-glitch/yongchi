@@ -45,17 +45,44 @@ bash quick_start.sh
 
 ## 三、安装 Node.js 22
 
-推荐在 1Panel 的运行环境中安装 Node.js 22。也可使用 nvm：
+这一步是给服务器安装项目运行环境。项目必须使用 Node.js 22.5 或更高版本，否则会因为缺少内置 `node:sqlite` 启动失败。
+
+### 推荐方式：在 1Panel 终端直接安装
+
+1. 登录 1Panel。
+2. 点击左侧「主机」→「终端」；如果你的版本叫「终端」或「SSH」，进入服务器终端即可。
+3. 逐行复制执行下面三条命令：
 
 ```bash
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-source ~/.bashrc
-nvm install 22
-nvm alias default 22
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+apt-get install -y nodejs
 node -v
 ```
 
-输出必须是 `v22.5.0` 或更高版本。项目使用内置 `node:sqlite`，Node 版本过低会启动失败。
+第三条命令会显示版本号，例如：
+
+```text
+v22.15.0
+```
+
+只要显示的是 `v22.x.x`，并且版本不低于 `v22.5.0`，就安装成功。
+
+如果提示 `curl` 或权限错误：
+
+- 确认进入的是 root 终端，或在命令前加 `sudo`。
+- 确认服务器可以访问互联网。
+- 不要把 `node -v` 的输出内容复制回去执行，它只是用来查看版本。
+
+### 如果 1Panel 已经提供 Node.js 运行环境
+
+部分 1Panel 版本可以在「运行环境」→「Node.js」→「创建运行环境」中选择 Node.js 22。选择 22.x 后创建即可。创建完成后仍建议在 1Panel 终端执行：
+
+```bash
+node -v
+npm -v
+```
+
+如果终端里的 `node -v` 不是 22.x，优先使用上面的 NodeSource 命令安装，因为 PM2 也需要使用同一个 Node.js 环境。
 
 ## 四、上传代码
 
