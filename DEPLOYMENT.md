@@ -122,7 +122,7 @@ git clone https://github.com/zarkinkamler468-glitch/yongchi.git pool-management-
 建议配置：
 
 - `NODE_ENV=production`
-- `HOST=127.0.0.1`
+- `HOST=0.0.0.0`（1Panel Node.js 容器必须这样填写，才能通过端口映射访问）
 - `PORT=3000`
 - `PMS_INITIAL_ADMIN_PASSWORD`
 - `PMS_INITIAL_BOSS_PASSWORD`
@@ -130,6 +130,8 @@ git clone https://github.com/zarkinkamler468-glitch/yongchi.git pool-management-
 - `PMS_INITIAL_FINANCE_PASSWORD`
 
 初始密码至少 8 位。只有数据库首次创建账号时生效，已有账号不会被自动覆盖。
+
+如果不是容器而是直接用 PM2 在宿主机运行，`HOST` 才使用 `127.0.0.1`，再由 OpenResty/Nginx 反向代理；使用 1Panel 当前截图中的 Node.js 运行环境时，请使用 `0.0.0.0`。
 
 创建 PM2 配置：
 
