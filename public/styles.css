@@ -167,6 +167,7 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 .hero {
   border-radius: var(--radius); padding: 24px 26px; margin-bottom: 16px;
   color: #fff; position: relative; overflow: hidden;
+  background-size: cover; background-position: center;
   background: linear-gradient(135deg, rgba(37, 99, 235, .9) 0%, rgba(14, 165, 233, .8) 100%);
   border: 1px solid rgba(255, 255, 255, .3);
   box-shadow: 0 16px 40px rgba(37, 99, 235, .28);

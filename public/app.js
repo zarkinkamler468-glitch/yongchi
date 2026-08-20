@@ -279,7 +279,8 @@ async function startShiftFromReminder() {
 /* ============================= 首页总览 ============================= */
 async function renderDashboard() {
   const el = $('#view-dashboard');
-  el.innerHTML = `<div class="hero"><h2>欢迎使用${esc(state.settings.store_name || '')}系统</h2><p>纯会员制 · 今日营业概览</p></div>
+  const dashboardBg = state.settings.dashboard_bg ? ` style="background-image:linear-gradient(180deg,rgba(8,30,70,.18),rgba(8,30,70,.68)),url('${esc(state.settings.dashboard_bg)}')"` : '';
+  el.innerHTML = `<div class="hero"${dashboardBg}><h2>欢迎使用${esc(state.settings.store_name || '')}系统</h2><p>纯会员制 · 今日营业概览</p></div>
     <div id="dashShiftBanner"></div>
     <div class="grid cols-4 mb-16" id="dashStats"><div class="card stat"><span class="stat-label">加载中…</span></div></div>
     <div class="grid cols-3 mb-16" id="dashRemind"></div>
@@ -1113,6 +1114,7 @@ async function renderSettings() {
   const canEditProtected = state.user?.role === 'admin';
   state.brand_logo_img = s.brand_logo_img || '';
   state.login_bg = s.login_bg || '';
+  state.dashboard_bg = s.dashboard_bg || '';
   $('#view-settings').innerHTML = `
     <div class="grid cols-2">
       <div class="card"><div class="card-title">有效期与扣费规则</div>
@@ -1143,11 +1145,18 @@ async function renderSettings() {
         ${canEditProtected ? `<div class="field"><label>ICP 备案号（登录页底部）</label><input class="input" id="stIcp" value="${esc(s.icp_no || '')}" placeholder="例如：京ICP备XXXXXXXX号"></div>
         <div class="field"><label>公安网安备案号（登录页底部）</label><input class="input" id="stPse" value="${esc(s.public_security_no || '')}" placeholder="例如：京公网安备XXXXXXXX号"></div>` : ''}
       </div>
+      <div class="card"><div class="card-title">首页欢迎区背景</div>
+        <div class="field"><label>首页横幅背景图（可选）</label><input class="input" type="file" id="stDashboardBgFile" accept="image/*">
+          <div class="hint mt-8">建议使用横向图片，首页会自动叠加暗色遮罩以保证文字清晰。</div>
+          ${s.dashboard_bg ? '<button class="btn btn-sm btn-danger mt-16" data-action="clearDashboardBg">清除首页背景图</button>' : ''}
+        </div>
+      </div>
     </div>
     <div class="mt-16"><button class="btn btn-primary" data-action="saveSettings">保存设置</button></div>`;
   // 图片上传处理
   $('#stLogoFile').addEventListener('change', (e) => { const f = e.target.files[0]; if (f) readImageAsDataURL(f, 200, (u) => { state.brand_logo_img = u; $('#stLogoPreview').innerHTML = `<img src="${esc(u)}" alt="">`; }); });
   $('#stBgFile').addEventListener('change', (e) => { const f = e.target.files[0]; if (f) readImageAsDataURL(f, 1600, (u) => { state.login_bg = u; }); });
+  $('#stDashboardBgFile').addEventListener('change', (e) => { const f = e.target.files[0]; if (f) readImageAsDataURL(f, 1600, (u) => { state.dashboard_bg = u; }); });
 }
 function readImageAsDataURL(file, maxW, cb) {
   const reader = new FileReader();
@@ -1166,11 +1175,12 @@ function readImageAsDataURL(file, maxW, cb) {
 }
 function clearLogoImg() { state.brand_logo_img = ''; $('#stLogoPreview').innerHTML = esc(state.settings.brand_icon || '🏊'); }
 function clearLoginBg() { state.login_bg = ''; }
+function clearDashboardBg() { state.dashboard_bg = ''; }
 async function saveSettings() {
   try {
     const body = {
       store_name: $('#stStoreName').value, month_rule: $('#stMonth').value, default_entry_fee: $('#stEntryFee').value,
-      brand_icon: $('#stBrandIcon').value, brand_logo_img: state.brand_logo_img || '', login_bg: state.login_bg || ''
+      brand_icon: $('#stBrandIcon').value, brand_logo_img: state.brand_logo_img || '', login_bg: state.login_bg || '', dashboard_bg: state.dashboard_bg || ''
     };
     if (state.user?.role === 'admin') Object.assign(body, {
       wechat_appid: $('#stWxAppid').value, wechat_secret: $('#stWxSecret').value,
@@ -1295,6 +1305,7 @@ function handle(name, el) {
     case 'testSmsSettings': testSmsSettings(); break;
     case 'clearLogoImg': clearLogoImg(); break;
     case 'clearLoginBg': clearLoginBg(); break;
+    case 'clearDashboardBg': clearDashboardBg(); break;
   }
 }
 

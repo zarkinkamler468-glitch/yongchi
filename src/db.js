@@ -242,6 +242,7 @@ const DEFAULT_SETTINGS = {
   brand_icon: '🏊',         // 品牌图标（emoji/文字，或上传图片后由 brand_logo_img 覆盖）
   brand_logo_img: '',       // 品牌图标图片（base64 data URL，可选）
   login_bg: '',             // 登录页背景图（base64 data URL，可选）
+  dashboard_bg: '',         // 首页欢迎区背景图（base64 data URL，可选）
   icp_no: '',               // ICP 备案号（登录页底部预留）
   public_security_no: '',   // 公安网安备案号（登录页底部预留）
   sms_enabled: '0',

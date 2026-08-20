@@ -4,7 +4,7 @@ const { getSettings, setSettings } = require('../db');
 const { ok, fail } = require('../http');
 
 // 公开品牌配置（登录页用，不含任何敏感信息）
-const PUBLIC_KEYS = ['store_name', 'brand_icon', 'brand_logo_img', 'login_bg', 'icp_no', 'public_security_no'];
+const PUBLIC_KEYS = ['store_name', 'brand_icon', 'brand_logo_img', 'login_bg', 'dashboard_bg', 'icp_no', 'public_security_no'];
 
 function publicConfig() {
   const all = getSettings();
