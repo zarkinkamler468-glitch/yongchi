@@ -3,11 +3,13 @@
 const { DatabaseSync } = require('node:sqlite');
 const path = require('node:path');
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const { today, now, addMonths, addDays, nextNo } = require('./util');
 const { hashPassword } = require('./crypto');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const DB_PATH = path.join(DATA_DIR, 'pool.db');
+const DEFAULT_DATA_DIR = path.join(__dirname, '..', 'data');
+const DB_PATH = process.env.PMS_DB_PATH ? path.resolve(process.env.PMS_DB_PATH) : path.join(DEFAULT_DATA_DIR, 'pool.db');
+const DATA_DIR = path.dirname(DB_PATH);
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -145,6 +147,7 @@ CREATE TABLE IF NOT EXISTS orders (
 CREATE TABLE IF NOT EXISTS payments (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   order_id       INTEGER NOT NULL,
+  source_card_id INTEGER,
   pay_method     TEXT NOT NULL,                       -- cash / wechat / alipay / stored
   amount         REAL NOT NULL,                       -- 退款为负数
   transaction_no TEXT,
@@ -208,6 +211,24 @@ CREATE TABLE IF NOT EXISTS operation_logs (
 // 旧库补齐微信绑定列
 ensureColumn('staff', 'wx_openid', 'wx_openid TEXT');
 ensureColumn('orders', 'benefit_uses', 'benefit_uses INTEGER NOT NULL DEFAULT 0');
+ensureColumn('orders', 'benefit_amount', 'benefit_amount REAL NOT NULL DEFAULT 0');
+ensureColumn('orders', 'benefit_days', 'benefit_days INTEGER NOT NULL DEFAULT 0');
+ensureColumn('payments', 'source_card_id', 'source_card_id INTEGER');
+
+// 兼容旧订单：新增退款权益快照字段后，为仍未发生退款的历史订单尽可能回填卡项权益。
+// 已经产生部分退款的订单不强行重算，避免改变既有账务结果。
+db.exec(`
+  UPDATE orders SET benefit_uses = COALESCE((SELECT cp.total_uses FROM card_products cp JOIN member_cards mc ON mc.card_product_id = cp.id WHERE mc.id = orders.member_card_id), 0)
+  WHERE benefit_uses = 0 AND order_type IN ('open','renew') AND member_card_id IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM orders r WHERE r.original_order_id = orders.id AND r.order_type = 'refund');
+  UPDATE orders SET benefit_amount = CASE
+    WHEN order_type = 'recharge' THEN paid_amount
+    ELSE COALESCE((SELECT cp.stored_value FROM card_products cp JOIN member_cards mc ON mc.card_product_id = cp.id WHERE mc.id = orders.member_card_id), 0)
+  END
+  WHERE benefit_amount = 0 AND member_card_id IS NOT NULL AND order_type IN ('open','renew','recharge')
+    AND EXISTS (SELECT 1 FROM member_cards mc WHERE mc.id = orders.member_card_id AND mc.card_type = 'stored')
+    AND NOT EXISTS (SELECT 1 FROM orders r WHERE r.original_order_id = orders.id AND r.order_type = 'refund');
+`);
 
 // ---------------------------------------------------------------------------
 // 默认设置
@@ -258,15 +279,29 @@ function setSettings(patch) {
 // ---------------------------------------------------------------------------
 // 种子数据
 // ---------------------------------------------------------------------------
+function initialPassword(envName, label) {
+  const configured = String(process.env[envName] || '');
+  if (configured.length >= 8) return configured;
+  const generated = crypto.randomBytes(18).toString('base64url');
+  if (process.env.NODE_ENV !== 'test') console.warn(`[安全提示] ${label} 使用随机初始密码，请从启动日志中获取并立即修改。`);
+  return generated;
+}
 function seedStaff() {
   const n = db.prepare('SELECT COUNT(*) AS n FROM staff').get().n;
   if (n > 0) return;
   const ts = now();
   const ins = db.prepare('INSERT INTO staff(username, password_hash, real_name, role, status, created_at) VALUES (?, ?, ?, ?, ?, ?)');
-  ins.run('admin', hashPassword('admin123'), '超管', 'admin', 'active', ts);
-  ins.run('boss', hashPassword('admin123'), '老板', 'boss', 'active', ts);
-  ins.run('frontdesk', hashPassword('front123'), '前台小陈', 'frontdesk', 'active', ts);
-  ins.run('finance', hashPassword('finance123'), '财务小李', 'finance', 'active', ts);
+  const credentials = [
+    ['admin', 'PMS_INITIAL_ADMIN_PASSWORD', '超管', 'admin'],
+    ['boss', 'PMS_INITIAL_BOSS_PASSWORD', '老板', 'boss'],
+    ['frontdesk', 'PMS_INITIAL_FRONTDESK_PASSWORD', '前台小陈', 'frontdesk'],
+    ['finance', 'PMS_INITIAL_FINANCE_PASSWORD', '财务小李', 'finance']
+  ];
+  for (const [username, envName, realName, role] of credentials) {
+    const password = initialPassword(envName, `${username} 账号`);
+    ins.run(username, hashPassword(password), realName, role, 'active', ts);
+    if (process.env.NODE_ENV !== 'test') console.warn(`[初始账号] ${username} 初始密码：${password}`);
+  }
 }
 
 function seedCardProducts() {
@@ -300,13 +335,14 @@ function ensureAdmin() {
   const taken = db.prepare('SELECT id FROM staff WHERE username = ?').get('admin');
   if (taken) return;
   db.prepare('INSERT INTO staff(username, password_hash, real_name, role, status, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .run('admin', hashPassword('admin123'), '超管', 'admin', 'active', now());
+    .run('admin', hashPassword(initialPassword('PMS_INITIAL_ADMIN_PASSWORD', '超管账号')), '超管', 'admin', 'active', now());
 }
 
 initSettings();
 seedStaff();
 ensureAdmin();
 seedCardProducts();
-seedDemoMembers();
+// 演示会员仅在显式设置 PMS_SEED_DEMO=1 时写入，避免生产环境重启后自动恢复测试数据。
+if (process.env.PMS_SEED_DEMO === '1') seedDemoMembers();
 
-module.exports = { db, getSettings, getSetting, setSettings, DEFAULT_SETTINGS };
+module.exports = { db, DB_PATH, getSettings, getSetting, setSettings, DEFAULT_SETTINGS };

@@ -84,7 +84,12 @@ function makeRouter(opts = {}) {
       const m = u.pathname.match(r.re);
       if (!m) continue;
       const params = {};
-      r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
+      try {
+        r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
+      } catch (_) {
+        sendJSON(res, 400, { error: '请求参数格式无效' });
+        return true;
+      }
 
       // 角色权限校验：admin 超管拥有全部权限
       if (r.roles && r.roles.length && req.user && req.user.role !== 'admin' && !r.roles.includes(req.user.role)) {

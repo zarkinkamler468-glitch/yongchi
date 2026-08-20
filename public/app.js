@@ -592,7 +592,8 @@ async function renderCashierForm(tab) {
     <div class="grid cols-2">
       <div class="card">
         <div class="card-title">会员与卡项</div>
-        ${tab === 'open' ? '<div class="hint mb-16">开卡将同时建立新会员档案</div>' : '<div class="field"><label>查询已有会员</label><input class="input" id="csMemberSearch" data-input="cashierMemberSearch" placeholder="输入姓名、手机号或会员编号查询"><div id="csMemberResults" class="search-results"></div><div id="csMemberSelected" class="text-muted mt-8"></div></div>'}
+        ${tab === 'open' ? '<div class="sale-tabs mb-16"><button class="sale-tab active" id="csNewMemberTab" data-action="cashierNewMember">新建会员</button><button class="sale-tab" id="csExistingMemberTab" data-action="cashierExistingMember">已有会员</button></div>' : ''}
+        <div id="csExistingMember"${state.cashierNewMember ? ' hidden' : ''}><div class="field"><label>查询已有会员</label><input class="input" id="csMemberSearch" data-input="cashierMemberSearch" placeholder="输入姓名、手机号或会员编号查询"><div id="csMemberResults" class="search-results"></div><div id="csMemberSelected" class="text-muted mt-8"></div></div></div>
         <div id="csNewMember"${state.cashierNewMember ? '' : ' hidden'}>
           <div class="form-row">
             <div class="field"><label>姓名 *</label><input class="input" id="csName"></div>
@@ -645,6 +646,10 @@ function pickPayMethod(el) {
 function cashierMemberPick() {
   const nm = $('#csNewMember');
   if (nm) nm.hidden = !state.cashierNewMember;
+  const em = $('#csExistingMember');
+  if (em) em.hidden = state.cashierNewMember;
+  $('#csNewMemberTab')?.classList.toggle('active', state.cashierNewMember);
+  $('#csExistingMemberTab')?.classList.toggle('active', !state.cashierNewMember);
 }
 const cashierMemberSearchDebounced = debounce(searchCashierMembers, 250);
 async function searchCashierMembers() {
@@ -679,6 +684,12 @@ function cashierNewMember() {
   if ($('#csMemberSelected')) $('#csMemberSelected').textContent = '将创建新会员';
   cashierMemberPick();
 }
+function cashierExistingMember() {
+  state.cashierMember = null;
+  state.cashierNewMember = false;
+  cashierMemberPick();
+  $('#csMemberSearch')?.focus();
+}
 async function loadMemberCards(memberId) {
   const d = await api('/api/member-cards?member_id=' + memberId);
   const type = state.cashierTab === 'renew' ? '' : 'stored';
@@ -701,7 +712,7 @@ async function submitCashier() {
   const memberId = state.cashierMember?.id || '';
   const payable = cashierToPay();
   if (!(payable > 0)) { toast('实收金额必须大于 0'); return; }
-  if (tab === 'open' && !($('#csName')?.value || '').trim()) { toast('请填写新会员姓名'); return; }
+  if (tab === 'open' && !memberId && !($('#csName')?.value || '').trim()) { toast('请选择已有会员或填写新会员姓名'); return; }
   if (['renew', 'recharge'].includes(tab) && !memberId) { toast('请先查询并选择会员'); return; }
   const body = {
     order_type: tab,
@@ -982,7 +993,7 @@ async function renderReports() {
 
 /* ============================= 员工绩效 ============================= */
 async function renderStaffPerformance() {
-  $('#view-staff-performance').innerHTML = `<div class="toolbar"><input class="input" type="date" id="spFrom"><span class="text-muted">至</span><input class="input" type="date" id="spTo"><button class="btn btn-primary" data-action="refreshStaffPerformance">查询</button><div class="spacer"></div></div><div class="card"><div class="hint mb-16">统计收款员工的开卡、续费、充值单量与实收；退款按审批员工统计。净收入=业务实收−已审批退款，提成比例请按门店规则另行设置。</div><div class="table-wrap"><table><thead><tr><th>员工</th><th>开卡</th><th>续费</th><th>充值</th><th>业务实收</th><th>退款</th><th>净收入</th></tr></thead><tbody id="spBody"></tbody></table></div></div>`;
+  $('#view-staff-performance').innerHTML = `<div class="toolbar"><input class="input" type="date" id="spFrom"><span class="text-muted">至</span><input class="input" type="date" id="spTo"><button class="btn btn-primary" data-action="refreshStaffPerformance">查询</button><div class="spacer"></div></div><div class="card"><div class="hint mb-16">统计收款员工的开卡、续费、充值单量与实收；退款回冲原销售员工。净收入=业务实收−原销售订单退款，审批人仅用于审计。</div><div class="table-wrap"><table><thead><tr><th>员工</th><th>开卡</th><th>续费</th><th>充值</th><th>业务实收</th><th>退款</th><th>净收入</th></tr></thead><tbody id="spBody"></tbody></table></div></div>`;
   $('#spFrom').value = addDays(todayStr(), -29); $('#spTo').value = todayStr();
   refreshStaffPerformance();
 }
@@ -1046,7 +1057,7 @@ async function openStaffForm(id) {
           <option value="frontdesk" ${u?.role === 'frontdesk' ? 'selected' : ''}>前台</option>
           <option value="finance" ${u?.role === 'finance' ? 'selected' : ''}>财务</option>
         </select></div>
-        <div class="field"><label>${u ? '重置密码（留空不修改）' : '密码 *'}</label><input class="input" type="password" id="sfPassword" placeholder="${u ? '留空则不变' : '至少 4 位'}"></div>
+        <div class="field"><label>${u ? '重置密码（留空不修改）' : '密码 *'}</label><input class="input" type="password" id="sfPassword" placeholder="${u ? '留空则不变' : '至少 8 位'}"></div>
       </div>
     </div>
     <div class="modal-foot"><button class="btn" data-action="closeModal">取消</button><button class="btn btn-primary" data-action="saveStaff" data-id="${u?.id || ''}">保存</button></div>`);
@@ -1247,6 +1258,7 @@ function handle(name, el) {
     case 'cashierMemberSearch': cashierMemberSearch(); break;
     case 'cashierPickMember': cashierPickMember(el); break;
     case 'cashierNewMember': cashierNewMember(); break;
+    case 'cashierExistingMember': cashierExistingMember(); break;
     case 'pickPayMethod': pickPayMethod(el); break;
     case 'toggleCashierFullscreen': toggleCashierFullscreen(); break;
     case 'cashierAmount': state.payManual = false; updateCashierTotal(); break;

@@ -19,12 +19,12 @@
   flex: 1; text-align: center; padding: 18rpx 0; border-radius: 14rpx;
   background: rgba(255,255,255,0.85); font-weight: 600; color: #475569;
 }
-.tab.active { background: linear-gradient(135deg, #2563eb, #0ea5e9); color: #fff; }
+.tab.active { background: #2563eb; color: #fff; }
 .card { margin-bottom: 20rpx; }
 .row { display: flex; }
 .pays { display: flex; gap: 12rpx; }
 .pay { flex: 1; text-align: center; padding: 20rpx 0; border-radius: 14rpx; background: #f1f5f9; font-weight: 600; color: #475569; }
-.pay.active { background: linear-gradient(135deg, #2563eb, #0ea5e9); color: #fff; }
+.pay.active { background: #2563eb; color: #fff; }
 .total-row { display: flex; justify-content: space-between; align-items: baseline; margin: 20rpx 0 12rpx; color: #64748b; }
 .total-row text:last-child { font-size: 44rpx; font-weight: 800; color: #1e293b; }
 .big { font-size: 40rpx; font-weight: 700; }

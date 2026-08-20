@@ -97,15 +97,25 @@ function checkin({ body, req }) {
   const people = Math.max(1, Math.floor(Number(body.people) || 1));
   const ts = now();
 
+  // 核销是“查询后确认”的扣减操作，必须在同一写事务内完成，避免并发请求超扣。
+  db.exec('BEGIN IMMEDIATE');
+
   const recordFail = (reason) => {
     db.prepare(`INSERT INTO entries(member_id, member_card_id, charge_type, deducted_uses, deducted_amount, gate_no, result, fail_reason, entry_at, staff_id)
       VALUES (?, ?, NULL, 0, 0, ?, 'fail', ?, ?, ?)`)
       .run(member.id, found.card ? found.card.id : null, gateNo, reason, ts, staff.id);
+    db.exec('COMMIT');
     return fail(400, reason);
   };
 
-  if (member.status === 'blacklist') return recordFail('黑名单会员禁止入场');
-  if (member.status === 'inactive') return recordFail('会员已停用');
+  const rollback = (e) => {
+    try { db.exec('ROLLBACK'); } catch (_) { /* no active transaction */ }
+    return fail((e && e.status) || 500, (e && e.message) || '核销失败');
+  };
+
+  try {
+    if (member.status === 'blacklist') return recordFail('黑名单会员禁止入场');
+    if (member.status === 'inactive') return recordFail('会员已停用');
 
   // 选择可用卡
   let card = found.card || null;
@@ -129,7 +139,8 @@ function checkin({ body, req }) {
 
   if (card.card_type === 'count') {
     if (card.remaining_uses < people) return recordFail('剩余次数不足');
-    db.prepare('UPDATE member_cards SET remaining_uses = remaining_uses - ?, updated_at = ? WHERE id = ?').run(people, ts, card.id);
+    const changed = db.prepare('UPDATE member_cards SET remaining_uses = remaining_uses - ?, updated_at = ? WHERE id = ? AND remaining_uses >= ?').run(people, ts, card.id, people);
+    if (changed.changes !== 1) return recordFail('剩余次数不足，请重新查询后再试');
     deductedUses = people;
     chargeType = 'count';
   } else if (card.card_type === 'month' || card.card_type === 'year') {
@@ -139,7 +150,8 @@ function checkin({ body, req }) {
     const fee = money(card.entry_fee) || money(30);
     const totalFee = money(fee * people);
     if (card.balance < totalFee) return recordFail('储值余额不足');
-    db.prepare('UPDATE member_cards SET balance = balance - ?, updated_at = ? WHERE id = ?').run(totalFee, ts, card.id);
+    const changed = db.prepare('UPDATE member_cards SET balance = balance - ?, updated_at = ? WHERE id = ? AND balance >= ?').run(totalFee, ts, card.id, totalFee);
+    if (changed.changes !== 1) return recordFail('储值余额不足，请重新查询后再试');
     deductedAmount = totalFee;
     chargeType = 'stored';
   } else {
@@ -155,6 +167,8 @@ function checkin({ body, req }) {
   const detail = chargeType === 'count' ? `入场核销，扣减${deductedUses}次，剩余${refreshedCard.remaining_uses}次` : chargeType === 'stored' ? `入场核销，扣减${deductedAmount}元，余额${refreshedCard.balance}元` : '入场核销成功';
   sms.accountChange(member, '入场核销', detail);
 
+  db.exec('COMMIT');
+
   return ok({
     member: { id: member.id, name: member.name, member_no: member.member_no, phone: member.phone, status: member.status },
     card: cardSummary(refreshedCard),
@@ -162,6 +176,9 @@ function checkin({ body, req }) {
     deducted_uses: deductedUses,
     deducted_amount: deductedAmount
   });
+  } catch (e) {
+    return rollback(e);
+  }
 }
 
 module.exports = { list, preview, checkin };

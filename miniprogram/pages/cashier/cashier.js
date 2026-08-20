@@ -3,7 +3,7 @@ const { fmtMoney, payLabel } = require('../../utils/util');
 
 Page({
   data: {
-    mode: 'home', tab: 'open', showMemberPicker: false, memberQuery: '', selectedMember: null, memberResults: [],
+    mode: 'home', tab: 'open', memberMode: 'new', showMemberPicker: false, memberQuery: '', selectedMember: null, memberResults: [],
     checkinKeyword: '', checkinPeople: 1, checkinResult: null, checkinPreview: null,
     products: [], allProducts: [],
     memberIndex: 0,
@@ -24,7 +24,7 @@ Page({
       this.compute();
     }).catch((e) => toast(e.message));
   },
-  setTab(e) { const tab = e.currentTarget.dataset.tab; this.setData({ mode: 'form', tab, memberIndex: 0, selectedMember: null, memberQuery: '', memberResults: [], cardIndex: 0, cards: [], cardOptions: [], products: this.data.allProducts, productIndex: 0 }); this.compute(); },
+  setTab(e) { const tab = e.currentTarget.dataset.tab; this.setData({ mode: 'form', tab, memberMode: tab === 'open' ? 'new' : 'existing', memberIndex: 0, selectedMember: null, memberQuery: '', memberResults: [], cardIndex: 0, cards: [], cardOptions: [], products: this.data.allProducts, productIndex: 0 }); this.compute(); },
   openCashier(e) { this.setTab(e); },
   goHome() { this.setData({ mode: 'home' }); },
   closeMemberPicker() { this.setData({ showMemberPicker: false }); },
@@ -63,11 +63,12 @@ Page({
     // 未输入关键词时只打开搜索面板，不预先展示大量会员，避免误选。
     this.setData({ memberResults: [], showMemberPicker: true });
   },
-  chooseNewMember() { this.setData({ memberIndex: 0, selectedMember: null, memberQuery: '', showMemberPicker: false, cards: [] }); },
+  chooseNewMember() { this.setData({ memberMode: 'new', memberIndex: 0, selectedMember: null, memberQuery: '', showMemberPicker: false, cards: [] }); },
+  chooseExistingMember() { this.setData({ memberMode: 'existing', memberIndex: 0, selectedMember: null, memberQuery: '', memberResults: [], cards: [] }); },
   chooseMember(e) {
     const m = this.data.memberResults.find((x) => Number(x.id) === Number(e.currentTarget.dataset.id));
     if (!m) return;
-    this.setData({ memberIndex: 1, selectedMember: m, memberQuery: `${m.member_no} · ${m.name}`, showMemberPicker: false });
+    this.setData({ memberMode: 'existing', memberIndex: 1, selectedMember: m, memberQuery: `${m.member_no} · ${m.name}`, showMemberPicker: false });
     if (['renew', 'recharge'].includes(this.data.tab)) this.loadCards(m.id);
   },
   loadCards(memberId) {
@@ -103,11 +104,11 @@ Page({
   },
   submit() {
     const { tab, selectedMember, newName, newPhone, newGender, products, productIndex, cards, cardIndex, amount, discount, payMethod, payAmount } = this.data;
-    const memberId = tab === 'open' ? undefined : selectedMember && selectedMember.id;
+    const memberId = selectedMember && selectedMember.id;
     const selectedCard = cards[cardIndex];
     const payable = Number(payAmount);
     if (!(payable > 0)) { toast('实收金额必须大于 0'); return; }
-    if (tab === 'open' && !newName.trim()) { toast('请填写新会员姓名'); return; }
+    if (tab === 'open' && !memberId && !newName.trim()) { toast('请选择已有会员或填写新会员姓名'); return; }
     if (['renew', 'recharge'].includes(tab) && !memberId) { toast('请先查询并选择会员'); return; }
     if (['renew', 'recharge'].includes(tab) && selectedCard && ['void', 'refunded'].includes(selectedCard.status)) { toast('已作废或退款的卡不可办理'); return; }
     const body = {
@@ -124,7 +125,7 @@ Page({
     request('/api/orders', { data: body }).then((d) => {
       wx.hideLoading();
       wx.showModal({ title: '收款成功', content: fmtMoney(d.amount), showCancel: false, confirmText: '继续' });
-      this.setData({ memberIndex: 0, selectedMember: null, memberQuery: '', memberResults: [], newName: '', newPhone: '', newGender: 'unknown', discount: '0', payManual: false, amount: '100', cards: [], cardOptions: [], cardIndex: 0 });
+      this.setData({ memberMode: tab === 'open' ? 'new' : 'existing', memberIndex: 0, selectedMember: null, memberQuery: '', memberResults: [], newName: '', newPhone: '', newGender: 'unknown', discount: '0', payManual: false, amount: '100', cards: [], cardOptions: [], cardIndex: 0 });
       this.loadBase();
     }).catch((e) => { wx.hideLoading(); toast(e.message); });
   }

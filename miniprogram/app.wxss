@@ -30,12 +30,12 @@ view, text, button, input { box-sizing: border-box; }
 }
 .btn::after { border: none; }
 .btn-primary {
-  background: linear-gradient(135deg, #2563eb, #0ea5e9);
+  background: #2563eb;
   color: #fff;
   box-shadow: 0 8rpx 18rpx rgba(37, 99, 235, 0.28);
 }
-.btn-success { background: linear-gradient(135deg, #059669, #10b981); color: #fff; }
-.btn-danger { background: linear-gradient(135deg, #dc2626, #ef4444); color: #fff; }
+.btn-success { background: #059669; color: #fff; }
+.btn-danger { background: #dc2626; color: #fff; }
 .btn-ghost { background: rgba(255,255,255,0.7); color: var(--text); border: 1rpx solid rgba(15,23,42,0.08); }
 .btn-disabled { opacity: 0.55; }
 

@@ -64,7 +64,13 @@ function getToken(req) {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
-  const pathname = decodeURIComponent(url.pathname);
+  let pathname;
+  try {
+    pathname = decodeURIComponent(url.pathname);
+  } catch (_) {
+    sendJSON(res, 400, { error: '请求路径格式无效' });
+    return;
+  }
   if (pathname.startsWith('/api/')) {
     // 公开接口：账号登录 / 微信登录 / 微信绑定；其余接口需登录令牌
     const PUBLIC = ['/api/auth/login', '/api/auth/wxlogin', '/api/auth/wxbind', '/api/auth/captcha', '/api/auth/captcha-image', '/api/public-config'];

@@ -30,7 +30,7 @@ function create({ body, req }) {
   if (role === 'admin' && (!req.user || req.user.role !== 'admin')) return fail(403, '仅超管可创建超管账号');
   if (!username) return fail(400, '登录账号不能为空');
   if (!realName) return fail(400, '姓名不能为空');
-  if (password.length < 4) return fail(400, '密码至少 4 位');
+  if (password.length < 8) return fail(400, '密码至少 8 位');
   if (db.prepare('SELECT id FROM staff WHERE username = ?').get(username)) return fail(400, '账号已存在');
   db.prepare('INSERT INTO staff(username, password_hash, real_name, role, status, created_at) VALUES (?, ?, ?, ?, ?, ?)')
     .run(username, hashPassword(password), realName, role, 'active', now());
@@ -52,13 +52,13 @@ function update({ params, body, req }) {
   if (u.role === 'admin' && (role !== 'admin' || status !== 'active') && activeCount('admin', isSelf ? u.id : null) <= (isSelf ? 1 : 0)) {
     return fail(400, '至少保留一名启用状态的超管账号');
   }
-  if (u.role === 'boss' && (role !== 'boss' || status !== 'active') && activeCount('boss', isSelf ? u.id : null) <= (isSelf ? 1 : 0)) {
+  if (u.role === 'boss' && (role !== 'boss' || status !== 'active') && activeCount('boss', u.id) < 1) {
     return fail(400, '至少保留一名启用状态的老板账号');
   }
   if (isSelf && status !== 'active') return fail(400, '不能停用当前登录账号');
   let hash = u.password_hash;
   if (body.password) {
-    if (String(body.password).length < 4) return fail(400, '密码至少 4 位');
+    if (String(body.password).length < 8) return fail(400, '密码至少 8 位');
     hash = hashPassword(String(body.password));
   }
   db.prepare('UPDATE staff SET real_name = ?, role = ?, status = ?, password_hash = ? WHERE id = ?')
@@ -77,7 +77,7 @@ function remove({ params, req }) {
   if (u.role === 'admin' && target === 'inactive' && activeCount('admin', u.id) <= (isSelf ? 1 : 0)) {
     return fail(400, '至少保留一名启用状态的超管账号');
   }
-  if (u.role === 'boss' && target === 'inactive' && activeCount('boss', u.id) <= (isSelf ? 1 : 0)) {
+  if (u.role === 'boss' && target === 'inactive' && activeCount('boss', u.id) < 1) {
     return fail(400, '至少保留一名启用状态的老板账号');
   }
   db.prepare('UPDATE staff SET status = ? WHERE id = ?').run(target, u.id);

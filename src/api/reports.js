@@ -99,7 +99,7 @@ function overview({ query }) {
 }
 
 // GET /api/reports/staff-performance?from=&to=
-// 按订单操作员汇总可用于绩效/提成核算的原始数据；退款按审批人统计。
+// 按原销售订单操作员汇总绩效；退款回冲原销售员工，审批人仅用于审计。
 function staffPerformance({ query }) {
   const range = reportRange(query); if (range.error) return range.error;
   const { from, to } = range;
@@ -112,8 +112,8 @@ function staffPerformance({ query }) {
       COALESCE(SUM(CASE WHEN o.order_type = 'recharge' AND o.status IN ('paid','partial_refund','refunded') THEN 1 ELSE 0 END),0) AS recharge_count,
       COALESCE(SUM(CASE WHEN o.order_type = 'recharge' AND o.status IN ('paid','partial_refund','refunded') THEN o.paid_amount ELSE 0 END),0) AS recharge_amount,
       COALESCE(SUM(CASE WHEN o.order_type IN ('open','renew','recharge') AND o.status IN ('paid','partial_refund','refunded') THEN o.paid_amount ELSE 0 END),0) AS gross_amount,
-      COALESCE((SELECT COUNT(*) FROM orders r WHERE r.order_type='refund' AND r.status='paid' AND r.approved_by=s.id AND r.created_at >= ? AND r.created_at <= ?),0) AS refund_count,
-      COALESCE((SELECT SUM(r.total_amount) FROM orders r WHERE r.order_type='refund' AND r.status='paid' AND r.approved_by=s.id AND r.created_at >= ? AND r.created_at <= ?),0) AS refund_amount
+      COALESCE((SELECT COUNT(*) FROM orders r JOIN orders original ON original.id=r.original_order_id WHERE r.order_type='refund' AND r.status='paid' AND original.staff_id=s.id AND r.created_at >= ? AND r.created_at <= ?),0) AS refund_count,
+      COALESCE((SELECT SUM(r.total_amount) FROM orders r JOIN orders original ON original.id=r.original_order_id WHERE r.order_type='refund' AND r.status='paid' AND original.staff_id=s.id AND r.created_at >= ? AND r.created_at <= ?),0) AS refund_amount
     FROM staff s LEFT JOIN orders o ON o.staff_id = s.id AND o.created_at >= ? AND o.created_at <= ?
     WHERE s.status = 'active' OR EXISTS (SELECT 1 FROM orders ox WHERE ox.staff_id=s.id AND ox.created_at >= ? AND ox.created_at <= ?)
     GROUP BY s.id ORDER BY gross_amount DESC, s.id
