@@ -1,97 +1,197 @@
-# 部署文档（峡谷管理系统 v0.5）
+# 游泳馆管理系统部署文档
 
-本系统为 **Node.js（零依赖）+ SQLite + 单文件数据库** 的轻量后端，前端静态文件由同一进程托管，部署极其简单。本文以「**Ubuntu 22.04 LTS + 1Panel + PM2**」为主方案，末尾给出宝塔替代方案。
+本文适用于 Ubuntu 22.04 LTS 云服务器、1Panel 面板、Node.js 22.5+、PM2 和 OpenResty/Nginx。项目使用 Node.js 内置 HTTP 服务和 SQLite，生产运行不依赖 MySQL，也不需要执行 `npm install`。
 
----
+## 一、上线前准备
 
-## 1. 服务器要求
+### 1. 服务器建议
 
-| 项 | 要求 |
+| 项目 | 建议 |
 | --- | --- |
-| 操作系统 | Ubuntu 22.04 LTS（推荐）/ 24.04 LTS / Debian 12 |
-| 内存 | 1GB 起步（2GB 更稳） |
-| 磁盘 | 10GB 起步（日志每天量很小，90 天自动清理） |
-| 运行时 | **Node.js ≥ 22.5**（使用内置 `node:sqlite`，无需 `npm install`、无需 MySQL） |
-| 面板 | 1Panel（推荐）或 宝塔 |
+| 系统 | Ubuntu 22.04 LTS 64 位 |
+| CPU | 1 核起步，2 核更稳 |
+| 内存 | 2 GB 起步 |
+| 磁盘 | 20 GB 起步，按备份保留量增加 |
+| 域名 | 已备案域名，例如 `pool.example.com` |
+| HTTPS | 必须配置；微信小程序真机和正式版要求 HTTPS |
+| Node.js | 22.5.0 或更高版本 |
 
-> 说明：项目**零 npm 依赖**，没有 `node_modules`，无需执行 `npm install`。部署 = 上传代码 + 用 PM2 跑 `server.js`。
+### 2. 需要提前准备
 
----
+- 云服务器公网 IP 和域名
+- 1Panel 管理员账号
+- 微信小程序 AppID、AppSecret（如启用微信登录）
+- 腾讯云短信密钥、SdkAppId、签名和模板 ID（如启用短信）
+- 四个员工账号的初始密码，建议通过环境变量配置
 
-## 2. 安装 1Panel（Ubuntu 22.04）
+## 二、安装和加固 1Panel
+
+SSH 登录服务器。建议使用 SSH 密钥登录，并修改面板管理员密码。
+
+官方安装方式（以 1Panel 官方文档当前命令为准）：
 
 ```bash
-# 以 root 执行官方一键脚本（安装过程会提示选端口、创建管理员账号）
-curl -sSL https://resource.fit2cloud.com/1panel/package/quick_start.sh -o quick_start.sh && bash quick_start.sh
+curl -sSL https://resource.fit2cloud.com/1panel/package/quick_start.sh -o quick_start.sh
+bash quick_start.sh
 ```
 
-装完会得到面板地址（如 `http://服务器IP:端口`）、用户名密码。登录后在「应用商店」装 **OpenResty/Nginx**（若未默认装）。
+安装后登录 1Panel：
 
-### 安装 Node 22
+1. 修改面板管理员密码。
+2. 开启面板安全入口或 IP 白名单。
+3. 防火墙只放行 `22`、`80`、`443` 和 1Panel 管理端口。
+4. 不要对公网放行应用端口 `3000`，应用只监听本机。
+5. 在应用商店安装 OpenResty 或 Nginx。
 
-1Panel 面板 →「网站」→「运行环境 / Node.js」创建运行时，或直接：
+## 三、安装 Node.js 22
+
+推荐在 1Panel 的运行环境中安装 Node.js 22。也可使用 nvm：
+
 ```bash
-# 通过 nvm 或 1Panel 的 Node 管理装 22.x
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+source ~/.bashrc
 nvm install 22
-node -v   # 确认 >= 22.5
+nvm alias default 22
+node -v
 ```
 
----
+输出必须是 `v22.5.0` 或更高版本。项目使用内置 `node:sqlite`，Node 版本过低会启动失败。
 
-## 3. 上传代码
+## 四、上传代码
+
+建议目录：
 
 ```bash
-mkdir -p /opt/pool && cd /opt/pool
-# 上传项目（排除 data 目录与 .git）。用 1Panel 的「文件」上传或 scp：
-# scp -r pool-management-system/* user@服务器:/opt/pool/
+mkdir -p /opt/pool-management-system
 ```
 
-目录结构：
-```
-/opt/pool/
-├── server.js
-├── package.json
-├── src/
-├── public/
-└── miniprogram/   # 小程序源码（不需部署到服务器，仅本地用）
-```
-
----
-
-## 4. 本地先验证
+可使用 1Panel 文件管理、scp 或 Git 上传：
 
 ```bash
-cd /opt/pool
+cd /opt
+git clone https://github.com/zarkinkamler468-glitch/yongchi.git pool-management-system
+```
+
+确认包含：
+
+```text
+/opt/pool-management-system/server.js
+/opt/pool-management-system/package.json
+/opt/pool-management-system/src/
+/opt/pool-management-system/public/
+/opt/pool-management-system/miniprogram/
+```
+
+`data/` 是运行时数据库目录。升级代码时必须保留生产环境的 `data/`，不要用测试目录覆盖。
+
+## 五、生产环境变量
+
+默认端口为 3000，数据库位置为：
+
+```text
+/opt/pool-management-system/data/pool.db
+```
+
+建议配置：
+
+- `NODE_ENV=production`
+- `HOST=127.0.0.1`
+- `PORT=3000`
+- `PMS_INITIAL_ADMIN_PASSWORD`
+- `PMS_INITIAL_BOSS_PASSWORD`
+- `PMS_INITIAL_FRONTDESK_PASSWORD`
+- `PMS_INITIAL_FINANCE_PASSWORD`
+
+初始密码至少 8 位。只有数据库首次创建账号时生效，已有账号不会被自动覆盖。
+
+创建 PM2 配置：
+
+```bash
+cd /opt/pool-management-system
+touch ecosystem.config.cjs
+chmod 600 ecosystem.config.cjs
+```
+
+内容示例：
+
+```js
+module.exports = {
+  apps: [{
+    name: 'pool-management-system',
+    script: './server.js',
+    cwd: '/opt/pool-management-system',
+    instances: 1,
+    autorestart: true,
+    watch: false,
+    max_memory_restart: '512M',
+    env: {
+      NODE_ENV: 'production',
+      HOST: '127.0.0.1',
+      PORT: '3000',
+      PMS_INITIAL_ADMIN_PASSWORD: '替换为至少8位随机密码',
+      PMS_INITIAL_BOSS_PASSWORD: '替换为至少8位随机密码',
+      PMS_INITIAL_FRONTDESK_PASSWORD: '替换为至少8位随机密码',
+      PMS_INITIAL_FINANCE_PASSWORD: '替换为至少8位随机密码'
+    }
+  }]
+};
+```
+
+不要把包含真实密码的配置文件提交到 Git。
+
+## 六、首次启动和 PM2 守护
+
+前台验证：
+
+```bash
+cd /opt/pool-management-system
 node server.js
-# 看到「服务已启动：http://localhost:3000」即成功
 ```
 
-浏览器访问 `http://服务器IP:3000`，用 `boss / admin123` 登录验证。**验证完 Ctrl+C 停掉**，改用 PM2 守护。
+看到服务启动后，用浏览器访问 `http://服务器IP:3000`，确认登录页正常，然后按 `Ctrl+C` 停止。
 
----
-
-## 5. PM2 进程守护 + 开机自启
+生产启动：
 
 ```bash
-npm i -g pm2
-cd /opt/pool
-pm2 start server.js --name pool --cwd /opt/pool
+npm install -g pm2
+cd /opt/pool-management-system
+pm2 start ecosystem.config.cjs
 pm2 save
-pm2 startup      # 按提示复制并执行输出的命令，实现开机自启
+pm2 startup
 ```
 
-常用命令：`pm2 status` / `pm2 logs pool` / `pm2 restart pool`。
+复制并执行 `pm2 startup` 输出的命令，然后：
 
----
+```bash
+pm2 save
+pm2 status
+pm2 logs pool-management-system --lines 100
+```
 
-## 6. 反向代理 + HTTPS（1Panel）
+首次随机密码会出现在启动日志中。登录后立即在「员工权限」重置。
+
+## 七、1Panel 域名和 HTTPS
+
+### 1. DNS
+
+添加 A 记录：
+
+```text
+主机记录：pool
+记录值：云服务器公网 IP
+```
+
+### 2. 反向代理
 
 1Panel →「网站」→「创建网站」→「反向代理」：
-- 域名：填写你的域名（需先解析到服务器 IP）
-- 代理地址：`http://127.0.0.1:3000`
-- 勾选「开启 HTTPS」→ 一键申请 Let's Encrypt 证书
 
-生成等价 Nginx 配置（供参考）：
+- 域名：`pool.example.com`
+- 代理地址：`http://127.0.0.1:3000`
+- 申请 Let's Encrypt 证书
+- 开启 HTTP 自动跳转 HTTPS
+
+等价配置：
+
 ```nginx
 server {
     listen 80;
@@ -99,13 +199,14 @@ server {
     return 301 https://$host$request_uri;
 }
 server {
-    listen 443 ssl;
+    listen 443 ssl http2;
     server_name pool.example.com;
-    ssl_certificate     /path/fullchain.pem;
-    ssl_certificate_key /path/privkey.pem;
+    ssl_certificate /path/to/fullchain.pem;
+    ssl_certificate_key /path/to/privkey.pem;
 
     location / {
         proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -114,84 +215,166 @@ server {
 }
 ```
 
-> 安全要点：**只在防火墙放行 80/443，不要直接暴露 3000 端口**。
+验证：
 
----
-
-## 7. 数据库备份
-
-整个数据就是一个文件：`/opt/pool/data/pool.db`（及 `-wal`/`-shm` 临时文件）。
-
-**备份脚本示例**（`backup.sh`）：
 ```bash
-#!/bin/bash
-cd /opt/pool
-ts=$(date +%Y%m%d_%H%M%S)
-sqlite3 data/pool.db ".backup 'backup/pool_$ts.db'" 2>/dev/null || cp data/pool.db backup/pool_$ts.db
-# 只保留最近 30 份
-ls -t backup/pool_*.db | tail -n +31 | xargs -r rm -f
+curl -I https://pool.example.com
 ```
 
-1Panel「计划任务」→ 添加 Shell 脚本定时执行（如每天 03:00）。建议同时把备份同步到对象存储/异地。
+不要对公网暴露 3000 端口。
 
----
+## 八、首次系统配置
 
-## 8. 上线安全清单（务必逐项做）
+1. 「员工权限」：修改初始密码，停用不用的账号。
+2. 「系统设置」：设置门店名称、月卡规则、储值默认扣费、品牌图标和背景图。
+3. 微信登录：只由超管填写 AppID 和 AppSecret。
+4. 「卡项管理」：核对次卡、月卡、年卡、储值卡价格和权益。
+5. 建立测试会员，验证收银、退款、核销和交班。
+6. 删除或作废测试业务数据后正式使用。
 
-- [ ] **立即修改默认密码**：`boss/admin123`、`frontdesk/front123`、`finance/finance123`。
-- [ ] 启用 HTTPS（已在上方）。
-- [ ] 登录爆破已内置防护（同 IP+账号连续错 5 次锁定 10 分钟），无需额外配置。
-- [ ] 操作日志已最小化，且**每 90 天自动清理**，控制存储占用。
-- [ ] 若要启用**员工微信登录**：在「系统设置」填入微信小程序 `AppID / AppSecret`（见下文小程序章节）。
-- [ ] 定期备份 `data/pool.db`。
-- [ ] 不要用 root 跑服务（1Panel 默认普通用户即可）。
+数据库文件为 `data/pool.db`，不要手工修改。
 
----
+## 九、微信小程序
 
-## 9. 微信小程序发布
+修改 `miniprogram/config.js`：
 
-### 9.1 后端配置
-1. 在系统「系统设置」填入微信小程序 **AppID 与 AppSecret**（用于 `jscode2session` 换取 openid，实现员工微信登录绑定）。
-2. 后端域名必须为 **HTTPS 已备案域名**。
+```js
+module.exports = {
+  BASE_URL: 'https://pool.example.com'
+};
+```
 
-### 9.2 小程序配置
-1. 微信开发者工具导入 `miniprogram/` 目录，`project.config.json` 里的 `appid` 换成你的 AppID。
-2. 改 `miniprogram/config.js` 的 `BASE_URL` 为 `https://你的域名`。
-3. 小程序后台「开发管理 → 开发设置 → 服务器域名」把该域名加入 **request 合法域名**。
-4. 上传代码 → 提交审核 → 发布。
+微信公众平台「开发管理 → 开发设置 → 服务器域名」添加：
 
-### 9.3 员工微信登录流程
-- 员工首次：小程序点「微信登录」→ 未绑定时弹出账号密码 → 验证通过后**绑定该员工微信**。
-- 之后：点「微信登录」直接免密进入。
-- 员工在「我的」可解绑微信。
+```text
+request 合法域名：https://pool.example.com
+```
 
----
+正式版必须使用 HTTPS 域名，不能使用 localhost、IP、端口或本机地址。
 
-## 10. 宝塔替代方案
+开发者工具：
 
-1. 安装宝塔：`curl -sSO https://download.bt.cn/install/install_panel.sh && bash install_panel.sh`。
-2. 软件商店装「Node.js 版本管理器」（选 22.x）与「Nginx」。
-3. 建站 → Node 项目，运行目录 `/opt/pool`，启动文件 `server.js`，用 PM2 管理。
-4. 反向代理与 SSL：网站 → 反向代理 → `127.0.0.1:3000` + 申请 SSL。
+1. 导入 `miniprogram/`。
+2. 填写正确 AppID。
+3. 开发阶段可临时勾选不校验合法域名，真机和正式版不能依赖该选项。
+4. 逐项测试登录、会员、收银、核销、交班、流水和退款。
+5. 上传、提交审核并发布。
 
-其余（备份、防火墙、改密码）同 1Panel 方案。
+## 十、腾讯云短信
 
----
+后台「短信通知配置」只有超管可访问。腾讯云侧需要：
 
-## 11. 升级 / 回滚
+1. 开通短信服务并创建短信应用，记录 SdkAppId。
+2. 创建并审核短信签名。
+3. 创建账户变动短信模板，变量顺序为：会员姓名、业务类型、变动说明。
+4. 创建最小权限 SecretId/SecretKey，不使用主账号密钥。
+5. 在后台填写并保存配置。
+6. 用测试手机号发送测试短信。
 
-- **升级**：备份 `data/pool.db` → 上传新代码覆盖（保留 `data/`）→ `pm2 restart pool`。
-- **回滚**：还原旧代码 + 还原备份的 `data/pool.db` → `pm2 restart pool`。
-- 数据库结构变化时，服务启动会自动执行幂等迁移（`ensureColumn`），一般无需手工操作。
+短信发送失败不会回滚收银、核销或退款主交易；应通过 PM2 日志和腾讯云控制台排查签名、模板、余额和地域限制。
 
----
+## 十一、备份和恢复
 
-## 12. 常见问题
+推荐 SQLite 在线备份：
 
-| 问题 | 处理 |
-| --- | --- |
-| 端口被占用 | `$env:PORT=3001; node server.js` 换端口，或 `pm2 delete` 旧进程 |
-| 登录提示「未登录或已过期」 | 令牌 7 天有效，重新登录即可 |
-| 微信登录报「未配置 appid/secret」 | 在系统设置填入小程序 AppID/Secret |
-| 数据丢失 | 确认 `data/pool.db` 未被覆盖；从备份还原 |
-| 小程序真机连不上 | 确认手机与服务器网络互通、域名已 HTTPS、已加 request 合法域名 |
+```bash
+mkdir -p /opt/pool-management-system/backup
+sqlite3 /opt/pool-management-system/data/pool.db \
+  ".backup '/opt/pool-management-system/backup/pool_$(date +%Y%m%d_%H%M%S).db'"
+```
+
+建议每天备份、保留 30 份，并至少每周同步一份到异地对象存储：
+
+```bash
+chmod 700 /opt/pool-management-system/backup
+chmod 600 /opt/pool-management-system/backup/*.db
+```
+
+恢复前停止服务：
+
+```bash
+pm2 stop pool-management-system
+cp /opt/pool-management-system/backup/pool_YYYYMMDD_HHMMSS.db /opt/pool-management-system/data/pool.db
+rm -f /opt/pool-management-system/data/pool.db-wal /opt/pool-management-system/data/pool.db-shm
+pm2 start pool-management-system
+```
+
+恢复前必须确认备份时间，避免覆盖最新业务。
+
+## 十二、升级流程
+
+1. 通知员工暂停收银和核销。
+2. 备份 `data/pool.db`。
+3. 上传新代码，保留 `data/` 和 PM2 配置。
+4. 运行测试：
+
+```bash
+cd /opt/pool-management-system
+npm test
+```
+
+5. 重启：
+
+```bash
+pm2 restart pool-management-system --update-env
+pm2 logs pool-management-system --lines 100
+```
+
+6. 抽查登录、会员、收银流水和报表。
+
+数据库迁移由服务启动时幂等执行，但升级前仍必须备份。
+
+## 十三、常用命令
+
+```bash
+pm2 status
+pm2 restart pool-management-system
+pm2 stop pool-management-system
+pm2 logs pool-management-system --lines 200
+pm2 monit
+curl -I https://pool.example.com
+ss -lntp | grep -E ':80|:443|:3000'
+df -h
+free -h
+```
+
+## 十四、故障排查
+
+### 页面打不开
+
+1. `pm2 status` 查看进程。
+2. `pm2 logs pool-management-system` 查看错误。
+3. `curl http://127.0.0.1:3000` 检查应用。
+4. 检查反向代理是否指向 `127.0.0.1:3000`。
+5. 检查 DNS、云防火墙和 1Panel 防火墙。
+
+### node:sqlite 不存在
+
+确认 `node -v` 为 22.5+，并确认 PM2 使用的是同一个 Node 环境。
+
+### 小程序请求失败
+
+检查 `config.js`、微信 request 合法域名、HTTPS 证书和 PM2 日志。正式版本不能使用 `127.0.0.1`。
+
+### 登录失败
+
+确认账号 active。连续错误登录会触发同 IP + 账号的临时锁定，等待约 10 分钟后重试。新安装时查看 PM2 日志中的随机初始密码。
+
+### 数据异常
+
+立即暂停收银，保存当前 `data/pool.db` 和 PM2 日志，再从最近备份恢复。不要直接手工修改金额、次数或余额。
+
+## 十五、上线检查清单
+
+- [ ] Ubuntu 22.04、Node.js 22.5+ 已确认
+- [ ] 域名已解析，HTTPS 证书有效
+- [ ] 3000 端口未对公网开放
+- [ ] PM2 已开机自启
+- [ ] 初始员工密码已修改
+- [ ] 微信 AppID/AppSecret 已配置（如需要）
+- [ ] 小程序 request 合法域名已配置
+- [ ] 卡项价格和权益已核对
+- [ ] 收银、退款、核销、交班、日结、报表已测试
+- [ ] 腾讯云短信已测试（如需要）
+- [ ] SQLite 自动备份已创建
+- [ ] 至少一份备份已异地保存
