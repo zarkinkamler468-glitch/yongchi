@@ -1,7 +1,7 @@
 'use strict';
 
 const { db } = require('../db');
-const { today, addDays, money } = require('../util');
+const { today, addDays, money, isDateString } = require('../util');
 const { ok, fail } = require('../http');
 
 function dayRange(date) {
@@ -25,10 +25,10 @@ function externalIncomeByType(type, from, to) {
 function reportRange(query) {
   const from = query.get('from') || addDays(today(), -29);
   const endDate = query.get('to') || today();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) return { error: fail(400, '日期格式无效') };
+  if (!isDateString(from) || !isDateString(endDate)) return { error: fail(400, '日期格式无效') };
   if (from > endDate) return { error: fail(400, '开始日期不能晚于结束日期') };
   if (from > today() || endDate > today()) return { error: fail(400, '不能查询未来日期') };
-  return { from, to: endDate + 'T23:59:59', endDate };
+  return { from, to: addDays(endDate, 1), endDate };
 }
 
 // GET /api/dashboard  首页总览
@@ -40,7 +40,7 @@ function dashboard({ req }) {
   const renew = externalIncomeByType('renew', d0, d1);
   const recharge = externalIncomeByType('recharge', d0, d1);
   const entries = db.prepare("SELECT COUNT(*) AS v FROM entries WHERE result='success' AND entry_at >= ? AND entry_at < ?").get(d0, d1).v;
-  const expiring = db.prepare("SELECT COUNT(*) AS v FROM member_cards WHERE card_type IN ('month','year') AND status = 'normal' AND end_at IS NOT NULL AND end_at >= ? AND end_at <= ?").get(today(), addDays(today(), 7)).v;
+  const expiring = db.prepare("SELECT COUNT(*) AS v FROM member_cards WHERE card_type IN ('count','month','year') AND status = 'normal' AND end_at IS NOT NULL AND end_at >= ? AND end_at <= ?").get(today(), addDays(today(), 7)).v;
   const lowBalance = db.prepare("SELECT COUNT(*) AS v FROM member_cards mc WHERE mc.card_type='stored' AND mc.status='normal' AND mc.balance < mc.entry_fee").get().v;
   const blacklist = db.prepare("SELECT COUNT(*) AS v FROM members WHERE status='blacklist'").get().v;
   const shift = db.prepare("SELECT * FROM shifts WHERE staff_id = ? AND status = 'active'").get(req.user.id);
@@ -71,31 +71,39 @@ function dashboard({ req }) {
 // GET /api/reports/overview?from=&to=  经营汇总
 function overview({ query }) {
   const range = reportRange(query); if (range.error) return range.error;
-  const { from, to } = range;
+  const { from, to, endDate } = range;
   const income = incomeBetween(from, to);
   const refund = refundBetween(from, to);
-  const entries = db.prepare("SELECT COUNT(*) AS v FROM entries WHERE result='success' AND entry_at >= ? AND entry_at <= ?").get(from, to).v;
-  const newMembers = db.prepare('SELECT COUNT(*) AS v FROM members WHERE created_at >= ? AND created_at <= ?').get(from, to).v;
+  const entries = db.prepare("SELECT COUNT(*) AS v FROM entries WHERE result='success' AND entry_at >= ? AND entry_at < ?").get(from, to).v;
+  const newMembers = db.prepare('SELECT COUNT(*) AS v FROM members WHERE created_at >= ? AND created_at < ?').get(from, to).v;
 
   const byCard = db.prepare(`
     SELECT mc.card_type, COALESCE(SUM(p.amount),0) AS amount
-    FROM payments p JOIN orders o ON o.id = p.order_id LEFT JOIN member_cards mc ON mc.id = o.member_card_id
-    WHERE p.paid_at >= ? AND p.paid_at <= ?
+    FROM payments p JOIN orders o ON o.id = p.order_id
+    LEFT JOIN orders original ON original.id = o.original_order_id
+    LEFT JOIN member_cards mc ON mc.id = CASE WHEN o.order_type='refund' THEN original.member_card_id ELSE o.member_card_id END
+    WHERE p.pay_method != 'stored' AND p.paid_at >= ? AND p.paid_at < ?
+      AND ((o.order_type IN ('open','renew','recharge') AND p.amount > 0) OR (o.order_type='refund' AND o.status='paid' AND p.amount < 0))
     GROUP BY mc.card_type
   `).all(from, to);
 
   const byPay = db.prepare(`
     SELECT p.pay_method, COALESCE(SUM(p.amount),0) AS amount
     FROM payments p JOIN orders o ON o.id = p.order_id
-    WHERE p.paid_at >= ? AND p.paid_at <= ?
+    WHERE p.pay_method != 'stored' AND p.paid_at >= ? AND p.paid_at < ?
+      AND ((o.order_type IN ('open','renew','recharge') AND p.amount > 0) OR (o.order_type='refund' AND o.status='paid' AND p.amount < 0))
     GROUP BY p.pay_method
   `).all(from, to);
 
   const byStaff = db.prepare(`
-    SELECT o.staff_id, s.real_name, COALESCE(SUM(p.amount),0) AS amount, COUNT(DISTINCT o.id) AS cnt
-    FROM payments p JOIN orders o ON o.id = p.order_id LEFT JOIN staff s ON s.id = o.staff_id
-    WHERE p.paid_at >= ? AND p.paid_at <= ?
-    GROUP BY o.staff_id
+    SELECT CASE WHEN o.order_type='refund' THEN original.staff_id ELSE o.staff_id END AS staff_id,
+      s.real_name, COALESCE(SUM(p.amount),0) AS amount, COUNT(DISTINCT o.id) AS cnt
+    FROM payments p JOIN orders o ON o.id = p.order_id
+    LEFT JOIN orders original ON original.id = o.original_order_id
+    LEFT JOIN staff s ON s.id = CASE WHEN o.order_type='refund' THEN original.staff_id ELSE o.staff_id END
+    WHERE p.pay_method != 'stored' AND p.paid_at >= ? AND p.paid_at < ?
+      AND ((o.order_type IN ('open','renew','recharge') AND p.amount > 0) OR (o.order_type='refund' AND o.status='paid' AND p.amount < 0))
+    GROUP BY CASE WHEN o.order_type='refund' THEN original.staff_id ELSE o.staff_id END
   `).all(from, to);
 
   return ok({
@@ -108,23 +116,23 @@ function overview({ query }) {
 // 按原销售订单操作员汇总绩效；退款回冲原销售员工，审批人仅用于审计。
 function staffPerformance({ query }) {
   const range = reportRange(query); if (range.error) return range.error;
-  const { from, to } = range;
+  const { from, to, endDate } = range;
   const rows = db.prepare(`
     SELECT s.id, s.username, s.real_name,
       COALESCE(SUM(CASE WHEN o.order_type = 'open' AND o.status IN ('paid','partial_refund','refunded') THEN 1 ELSE 0 END),0) AS open_count,
-      COALESCE(SUM(CASE WHEN o.order_type = 'open' AND o.status IN ('paid','partial_refund','refunded') THEN o.paid_amount ELSE 0 END),0) AS open_amount,
+      COALESCE(SUM(CASE WHEN o.order_type = 'open' AND o.status IN ('paid','partial_refund','refunded') THEN COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.order_id=o.id AND p.amount>0 AND p.pay_method!='stored'),0) ELSE 0 END),0) AS open_amount,
       COALESCE(SUM(CASE WHEN o.order_type = 'renew' AND o.status IN ('paid','partial_refund','refunded') THEN 1 ELSE 0 END),0) AS renew_count,
-      COALESCE(SUM(CASE WHEN o.order_type = 'renew' AND o.status IN ('paid','partial_refund','refunded') THEN o.paid_amount ELSE 0 END),0) AS renew_amount,
+      COALESCE(SUM(CASE WHEN o.order_type = 'renew' AND o.status IN ('paid','partial_refund','refunded') THEN COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.order_id=o.id AND p.amount>0 AND p.pay_method!='stored'),0) ELSE 0 END),0) AS renew_amount,
       COALESCE(SUM(CASE WHEN o.order_type = 'recharge' AND o.status IN ('paid','partial_refund','refunded') THEN 1 ELSE 0 END),0) AS recharge_count,
-      COALESCE(SUM(CASE WHEN o.order_type = 'recharge' AND o.status IN ('paid','partial_refund','refunded') THEN o.paid_amount ELSE 0 END),0) AS recharge_amount,
-      COALESCE(SUM(CASE WHEN o.order_type IN ('open','renew','recharge') AND o.status IN ('paid','partial_refund','refunded') THEN o.paid_amount ELSE 0 END),0) AS gross_amount,
-      COALESCE((SELECT COUNT(*) FROM orders r JOIN orders original ON original.id=r.original_order_id WHERE r.order_type='refund' AND r.status='paid' AND original.staff_id=s.id AND COALESCE(r.approved_at,r.created_at) >= ? AND COALESCE(r.approved_at,r.created_at) <= ?),0) AS refund_count,
-      COALESCE((SELECT SUM(r.total_amount) FROM orders r JOIN orders original ON original.id=r.original_order_id WHERE r.order_type='refund' AND r.status='paid' AND original.staff_id=s.id AND COALESCE(r.approved_at,r.created_at) >= ? AND COALESCE(r.approved_at,r.created_at) <= ?),0) AS refund_amount
-    FROM staff s LEFT JOIN orders o ON o.staff_id = s.id AND o.created_at >= ? AND o.created_at <= ?
-    WHERE s.status = 'active' OR EXISTS (SELECT 1 FROM orders ox WHERE ox.staff_id=s.id AND ox.created_at >= ? AND ox.created_at <= ?)
+      COALESCE(SUM(CASE WHEN o.order_type = 'recharge' AND o.status IN ('paid','partial_refund','refunded') THEN COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.order_id=o.id AND p.amount>0 AND p.pay_method!='stored'),0) ELSE 0 END),0) AS recharge_amount,
+      COALESCE(SUM(CASE WHEN o.order_type IN ('open','renew','recharge') AND o.status IN ('paid','partial_refund','refunded') THEN COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.order_id=o.id AND p.amount>0 AND p.pay_method!='stored'),0) ELSE 0 END),0) AS gross_amount,
+      COALESCE((SELECT COUNT(*) FROM orders r JOIN orders original ON original.id=r.original_order_id WHERE r.order_type='refund' AND r.status='paid' AND original.staff_id=s.id AND COALESCE(r.approved_at,r.created_at) >= ? AND COALESCE(r.approved_at,r.created_at) < ?),0) AS refund_count,
+      COALESCE((SELECT SUM(-p.amount) FROM orders r JOIN orders original ON original.id=r.original_order_id JOIN payments p ON p.order_id=r.id WHERE r.order_type='refund' AND r.status='paid' AND p.amount<0 AND p.pay_method!='stored' AND original.staff_id=s.id AND p.paid_at >= ? AND p.paid_at < ?),0) AS refund_amount
+    FROM staff s LEFT JOIN orders o ON o.staff_id = s.id AND o.created_at >= ? AND o.created_at < ?
+    WHERE s.status = 'active' OR EXISTS (SELECT 1 FROM orders ox WHERE ox.staff_id=s.id AND ox.created_at >= ? AND ox.created_at < ?)
     GROUP BY s.id ORDER BY gross_amount DESC, s.id
   `).all(from, to, from, to, from, to, from, to);
-  return ok({ from, to: to.slice(0, 10), list: rows.map((r) => ({ ...r, open_amount: money(r.open_amount), renew_amount: money(r.renew_amount), recharge_amount: money(r.recharge_amount), gross_amount: money(r.gross_amount), refund_amount: money(r.refund_amount), net_amount: money(Number(r.gross_amount) - Number(r.refund_amount)) })) });
+  return ok({ from, to: endDate, list: rows.map((r) => ({ ...r, open_amount: money(r.open_amount), renew_amount: money(r.renew_amount), recharge_amount: money(r.recharge_amount), gross_amount: money(r.gross_amount), refund_amount: money(r.refund_amount), net_amount: money(Number(r.gross_amount) - Number(r.refund_amount)) })) });
 }
 
 // GET /api/reports/cards-expiring?days=30
@@ -134,7 +142,7 @@ function cardsExpiring({ query }) {
   const rows = db.prepare(`
     SELECT mc.*, m.name AS member_name, m.member_no, m.phone
     FROM member_cards mc JOIN members m ON m.id = mc.member_id
-    WHERE mc.card_type IN ('month','year') AND mc.status = 'normal' AND mc.end_at IS NOT NULL AND mc.end_at >= ? AND mc.end_at <= ?
+    WHERE mc.card_type IN ('count','month','year') AND mc.status = 'normal' AND mc.end_at IS NOT NULL AND mc.end_at >= ? AND mc.end_at <= ?
     ORDER BY mc.end_at LIMIT 500
   `).all(today(), addDays(today(), days));
   return ok({ list: rows });
@@ -158,7 +166,7 @@ function exportOrders({ query }) {
     LEFT JOIN members m ON m.id = o.member_id
     LEFT JOIN member_cards mc ON mc.id = o.member_card_id
     LEFT JOIN staff s ON s.id = o.staff_id
-    WHERE o.created_at >= ? AND o.created_at <= ?
+    WHERE o.created_at >= ? AND o.created_at < ?
     ORDER BY o.id
   `).all(from, to);
   const head = ['订单号', '类型', '状态', '原价', '优惠', '应付', '实付', '会员', '会员号', '卡号', '操作员', '时间'];

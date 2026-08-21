@@ -5,6 +5,10 @@ const { now, money } = require('../util');
 const { ok, fail } = require('../http');
 const audit = require('./audit');
 
+function canUseShift(req) {
+  return req && req.user && ['boss', 'frontdesk', 'admin'].includes(req.user.role);
+}
+
 function shiftSummary(shiftId) {
   const rows = db.prepare(`
     SELECT p.pay_method,
@@ -36,6 +40,7 @@ function decorate(s) {
 
 // GET /api/shifts
 function list({ req, query }) {
+  if (!canUseShift(req)) return fail(403, '财务账号不参与班次');
   const where = [];
   const args = [];
   if (req.user.role === 'frontdesk') { where.push('s.staff_id = ?'); args.push(req.user.id); }
@@ -48,12 +53,14 @@ function list({ req, query }) {
 
 // GET /api/shifts/current
 function current({ req }) {
+  if (!canUseShift(req)) return fail(403, '财务账号不参与班次');
   const s = db.prepare("SELECT * FROM shifts WHERE staff_id = ? AND status = 'active'").get(req.user.id);
   return ok({ shift: s ? decorate(s) : null });
 }
 
 // POST /api/shifts/start
 function start({ req, body }) {
+  if (!canUseShift(req)) return fail(403, '财务账号不参与班次');
   const active = db.prepare("SELECT * FROM shifts WHERE staff_id = ? AND status = 'active'").get(req.user.id);
   if (active) return ok({ shift: decorate(active) });
   const openingCash = money(body.opening_cash || 0);
@@ -66,6 +73,7 @@ function start({ req, body }) {
 
 // GET /api/shifts/:id
 function get({ params, req }) {
+  if (!canUseShift(req)) return fail(403, '财务账号不参与班次');
   const s = db.prepare('SELECT * FROM shifts WHERE id = ?').get(params.id);
   if (!s) return fail(404, '班次不存在');
   if (req.user.role === 'frontdesk' && Number(s.staff_id) !== Number(req.user.id)) return fail(403, '前台只能查看自己的班次');
@@ -76,10 +84,11 @@ function get({ params, req }) {
 
 // POST /api/shifts/:id/close
 function close({ params, body, req }) {
+  if (!canUseShift(req)) return fail(403, '财务账号不参与班次');
   const s = db.prepare('SELECT * FROM shifts WHERE id = ?').get(params.id);
   if (!s) return fail(404, '班次不存在');
   if (s.status !== 'active') return fail(400, '该班次已交班');
-  if (Number(s.staff_id) !== Number(req.user.id) && req.user.role === 'frontdesk') return fail(403, '前台只能交自己的班');
+  if (Number(s.staff_id) !== Number(req.user.id) && !['boss', 'admin'].includes(req.user.role)) return fail(403, '只能交接自己的班次');
   const summary = shiftSummary(s.id);
   const actualCash = body.actual_cash === undefined || body.actual_cash === '' ? null : money(Number(body.actual_cash));
   if (actualCash !== null && (!Number.isFinite(Number(body.actual_cash)) || actualCash < 0)) return fail(400, '实点现金必须是非负数');

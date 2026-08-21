@@ -29,7 +29,9 @@ function create({ body, req }) {
   const role = ROLES.includes(body.role) ? body.role : 'frontdesk';
   if (role === 'admin' && (!req.user || req.user.role !== 'admin')) return fail(403, '仅超管可创建超管账号');
   if (!username) return fail(400, '登录账号不能为空');
+  if (username.length > 50 || !/^[A-Za-z0-9_.-]+$/.test(username)) return fail(400, '登录账号仅支持字母、数字、点、下划线和短横线，且不超过 50 位');
   if (!realName) return fail(400, '姓名不能为空');
+  if (realName.length > 50) return fail(400, '姓名不能超过 50 个字');
   if (password.length < 8) return fail(400, '密码至少 8 位');
   if (db.prepare('SELECT id FROM staff WHERE username = ?').get(username)) return fail(400, '账号已存在');
   db.prepare('INSERT INTO staff(username, password_hash, real_name, role, status, created_at) VALUES (?, ?, ?, ?, ?, ?)')
@@ -43,13 +45,17 @@ function update({ params, body, req }) {
   if (!u) return fail(404, '员工不存在');
   const realName = (body.real_name || '').trim();
   if (!realName) return fail(400, '姓名不能为空');
+  if (realName.length > 50) return fail(400, '姓名不能超过 50 个字');
+  const username = body.username === undefined ? u.username : String(body.username || '').trim();
+  if (!username || username.length > 50 || !/^[A-Za-z0-9_.-]+$/.test(username)) return fail(400, '登录账号格式无效');
+  if (db.prepare('SELECT id FROM staff WHERE username = ? AND id != ?').get(username, u.id)) return fail(400, '账号已存在');
   const role = ROLES.includes(body.role) ? body.role : 'frontdesk';
   const status = body.status === 'inactive' ? 'inactive' : 'active';
   const isSelf = req.user && Number(req.user.id) === Number(u.id);
   const isAdminOp = req.user && req.user.role === 'admin';
   // 仅超管可管理超管账号、或把账号改为/改出超管
   if ((u.role === 'admin' || role === 'admin') && !isAdminOp) return fail(403, '仅超管可管理超管账号');
-  if (u.role === 'admin' && (role !== 'admin' || status !== 'active') && activeCount('admin', isSelf ? u.id : null) <= (isSelf ? 1 : 0)) {
+  if (u.role === 'admin' && (role !== 'admin' || status !== 'active') && activeCount('admin', u.id) < 1) {
     return fail(400, '至少保留一名启用状态的超管账号');
   }
   if (u.role === 'boss' && (role !== 'boss' || status !== 'active') && activeCount('boss', u.id) < 1) {
@@ -61,8 +67,9 @@ function update({ params, body, req }) {
     if (String(body.password).length < 8) return fail(400, '密码至少 8 位');
     hash = hashPassword(String(body.password));
   }
-  db.prepare('UPDATE staff SET real_name = ?, role = ?, status = ?, password_hash = ? WHERE id = ?')
-    .run(realName, role, status, hash, u.id);
+  db.prepare('UPDATE staff SET username = ?, real_name = ?, role = ?, status = ?, password_hash = ? WHERE id = ?')
+    .run(username, realName, role, status, hash, u.id);
+  if (body.password || status !== 'active' || role !== u.role) db.prepare('DELETE FROM sessions WHERE staff_id = ?').run(u.id);
   return ok({ staff: sanitize(db.prepare('SELECT * FROM staff WHERE id = ?').get(u.id)) });
 }
 
@@ -74,7 +81,7 @@ function remove({ params, req }) {
   const target = u.status === 'active' ? 'inactive' : 'active';
   if (u.role === 'admin' && !isAdminOp) return fail(403, '仅超管可管理超管账号');
   if (isSelf && target === 'inactive') return fail(400, '不能停用当前登录账号');
-  if (u.role === 'admin' && target === 'inactive' && activeCount('admin', u.id) <= (isSelf ? 1 : 0)) {
+  if (u.role === 'admin' && target === 'inactive' && activeCount('admin', u.id) < 1) {
     return fail(400, '至少保留一名启用状态的超管账号');
   }
   if (u.role === 'boss' && target === 'inactive' && activeCount('boss', u.id) < 1) {

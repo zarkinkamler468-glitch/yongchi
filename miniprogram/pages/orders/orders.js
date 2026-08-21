@@ -20,7 +20,7 @@ Page({
         loading: false,
         list: d.list.map((o) => ({
           ...o, typeText: orderTypeLabel(o.order_type), statusText: orderStatusLabel(o.status),
-          amountText: fmtMoney(o.order_type === 'refund' ? -Number(o.total_amount) : o.paid_amount), timeText: fmtDateTime(o.created_at),
+          amountText: fmtMoney(o.order_type === 'refund' ? -Number(o.total_amount) : o.paid_amount), timeText: fmtDateTime(o.business_at || o.created_at),
           statusClass: o.status === 'paid' ? 'green' : o.status === 'pending' ? 'amber' : o.status === 'refunded' || o.status === 'void' ? 'red' : 'amber'
         }))
       });

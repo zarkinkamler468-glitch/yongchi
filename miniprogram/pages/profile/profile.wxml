@@ -10,7 +10,7 @@
   <view class="menu">
     <view class="menu-item" bindtap="goStats"><text class="menu-ico">▥</text><text class="menu-label">营收统计</text><text class="menu-arrow">›</text></view>
     <view class="menu-item" bindtap="goOrders"><text class="menu-ico">≡</text><text class="menu-label">收银流水</text><text class="menu-arrow">›</text></view>
-    <view class="menu-item" bindtap="goShifts"><text class="menu-ico">◷</text><text class="menu-label">交班对账</text><text class="menu-arrow">›</text></view>
+    <view class="menu-item" wx:if="{{canShift}}" bindtap="goShifts"><text class="menu-ico">◷</text><text class="menu-label">交班对账</text><text class="menu-arrow">›</text></view>
     <view class="menu-item" wx:if="{{canRefund}}" bindtap="goRefunds"><text class="menu-ico">↩</text><text class="menu-label">退款审批</text><text class="menu-arrow">›</text></view>
     <view class="menu-item" wx:if="{{wxBound}}" bindtap="unbindWx"><text class="menu-ico">⌁</text><text class="menu-label">解绑微信</text><text class="menu-arrow">›</text></view>
     <view class="menu-item" bindtap="logout"><text class="menu-ico">⇥</text><text class="menu-label">退出登录</text><text class="menu-arrow">›</text></view>

@@ -67,6 +67,7 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'same-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'");
   const url = new URL(req.url, 'http://localhost');
   let pathname;
   try {
@@ -112,7 +113,7 @@ server.on('error', (err) => {
 server.listen(PORT, HOST, () => {
   prune(); // 启动时清理过期操作日志
   console.log('==============================================');
-  console.log(`  ${getSetting('store_name')} - 游泳池管理系统`);
+  console.log(`  ${getSetting('store_name') || '游泳馆管理'} - 游泳池管理系统`);
   console.log('==============================================');
   console.log(`  服务已启动：http://localhost:${PORT}`);
   console.log(`  数据库文件：${DB_PATH}`);

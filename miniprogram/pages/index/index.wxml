@@ -19,7 +19,7 @@
     <view class="quick-item" bindtap="goCashier"><view class="quick-ico qi-cash"></view><text>收银</text></view>
     <view class="quick-item" bindtap="goCheckin"><view class="quick-ico qi-check"></view><text>核销</text></view>
     <view class="quick-item" bindtap="goMembers"><view class="quick-ico qi-member"></view><text>会员</text></view>
-    <view class="quick-item" bindtap="goShifts"><view class="quick-ico qi-shift"></view><text>交班</text></view>
+    <view class="quick-item" wx:if="{{canShift}}" bindtap="goShifts"><view class="quick-ico qi-shift"></view><text>交班</text></view>
   </view>
 
   <view class="card">

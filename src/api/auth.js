@@ -62,6 +62,8 @@ function captchaSvg(code) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${body}</svg>`;
 }
 function captcha() {
+  const ts = Date.now();
+  for (const [key, rec] of captchaTokens) if (!rec || rec.expires < ts) captchaTokens.delete(key);
   const code = randomCode();
   const token = createToken();
   captchaTokens.set(token, { code, expires: Date.now() + 5 * 60 * 1000 });
@@ -139,6 +141,8 @@ function login({ body, req }) {
 
 // ---------------- 微信登录 ----------------
 async function wxLogin({ body }) {
+  const ts = Date.now();
+  for (const [key, rec] of bindTokens) if (!rec || rec.expires < ts) bindTokens.delete(key);
   const code = (body.code || '').trim();
   if (!code) return fail(400, '缺少微信登录 code');
   const sess = await jscode2session(code);

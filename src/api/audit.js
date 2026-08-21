@@ -27,6 +27,7 @@ function prune() {
   try {
     const cutoff = addDays(today(), -LOG_RETAIN_DAYS);
     const r = db.prepare('DELETE FROM operation_logs WHERE created_at < ?').run(cutoff);
+    db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(now());
     if (r.changes > 0) console.log(`[日志] 已清理 ${r.changes} 条超过 ${LOG_RETAIN_DAYS} 天的操作日志`);
   } catch (e) { /* ignore */ }
 }

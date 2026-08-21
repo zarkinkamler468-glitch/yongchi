@@ -131,6 +131,7 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 
 /* ---------------- 卡片 / 栅格 ---------------- */
 .grid { display: grid; gap: 16px; }
+.sms-provider-panel[hidden] { display: none; }
 .grid.cols-4 { grid-template-columns: repeat(4, 1fr); }
 .grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
 .grid.cols-2 { grid-template-columns: repeat(2, 1fr); }

@@ -76,10 +76,10 @@ function buildRouter() {
   post('/api/entries/checkin', entries.checkin, { roles: FRONT, action: '入场核销', module: 'entry', audit: false });
 
   // 交班对账
-  get('/api/shifts', shifts.list);
-  get('/api/shifts/current', shifts.current);
+  get('/api/shifts', shifts.list, { roles: FRONT });
+  get('/api/shifts/current', shifts.current, { roles: FRONT });
   post('/api/shifts/start', shifts.start, { roles: FRONT, action: '开始班次', module: 'shift' });
-  get('/api/shifts/:id', shifts.get);
+  get('/api/shifts/:id', shifts.get, { roles: FRONT });
   post('/api/shifts/:id/close', shifts.close, { roles: FRONT, action: '交班对账', module: 'shift', audit: false });
 
   // 日结管理

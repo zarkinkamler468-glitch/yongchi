@@ -44,6 +44,12 @@ function addDays(dateStr, days) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+function isDateString(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return false;
+  const d = new Date(String(value) + 'T00:00:00');
+  return Number.isFinite(d.getTime()) && fmtDate(d).slice(0, 10) === value;
+}
+
 // 生成编号（前缀 + 序号补零）
 function genNo(prefix, n, width = 6) {
   return prefix + String(n).padStart(width, '0');
@@ -56,4 +62,4 @@ function nextNo(db, table, prefix, width) {
   return genNo(prefix, n, width);
 }
 
-module.exports = { pad, money, today, now, fmtDate, addMonths, addDays, genNo, nextNo };
+module.exports = { pad, money, today, now, fmtDate, addMonths, addDays, isDateString, genNo, nextNo };

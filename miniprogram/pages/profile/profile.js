@@ -2,10 +2,15 @@ const { request, toast } = require('../../utils/request');
 const { roleLabel } = require('../../utils/util');
 
 Page({
-  data: { user: null, roleText: '', wxBound: false, canRefund: false, icpNo: '', pseNo: '' },
+  data: { user: null, roleText: '', wxBound: false, canRefund: false, canShift: false, icpNo: '', pseNo: '' },
   onShow() {
     const user = wx.getStorageSync('user') || null;
-    this.setData({ user, roleText: user ? roleLabel(user.role) : '', canRefund: user && ['boss', 'finance', 'admin'].includes(user.role) });
+    this.setData({
+      user,
+      roleText: user ? roleLabel(user.role) : '',
+      canRefund: user && ['boss', 'finance', 'admin'].includes(user.role),
+      canShift: user && ['boss', 'frontdesk', 'admin'].includes(user.role)
+    });
     request('/api/auth/me').then((d) => this.setData({ wxBound: !!d.user.wx_bound })).catch(() => {});
     request('/api/public-config').then((d) => this.setData({ icpNo: d.settings.icp_no || '', pseNo: d.settings.public_security_no || '' })).catch(() => {});
   },

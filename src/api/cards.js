@@ -1,18 +1,41 @@
 'use strict';
 
 const { db } = require('../db');
-const { today, now, addDays, money } = require('../util');
+const { today, now, addDays, money, isDateString } = require('../util');
 const { ok, fail } = require('../http');
 const { CARD_TYPES } = require('./common');
 const audit = require('./audit');
+const sms = require('../sms');
 
 const CARD_STATUS = { normal: '正常', frozen: '冻结', expired: '过期', void: '作废', refunded: '已退款' };
 const CARD_TYPE_LABEL = { count: '次卡', month: '月卡', year: '年卡', stored: '储值卡' };
 
 function deriveStatus(c) {
   if (c.status !== 'normal') return c.status;
-  if (['month', 'year'].includes(c.card_type) && c.end_at && c.end_at < today()) return 'expired';
+  if (c.card_type !== 'stored' && c.end_at && c.end_at < today()) return 'expired';
   return 'normal';
+}
+
+function calendarDays(from, to) {
+  if (!from || !to) return 0;
+  const a = new Date(String(from).slice(0, 10) + 'T00:00:00');
+  const b = new Date(String(to).slice(0, 10) + 'T00:00:00');
+  const diff = Math.round((b - a) / 86400000);
+  return Number.isFinite(diff) ? Math.max(0, diff) : 0;
+}
+
+// 冻结截止日到达后惰性自动解冻；有效期只顺延实际冻结的日历天数。
+function refreshFrozenCard(card, forceDate) {
+  if (!card || card.status !== 'frozen') return card;
+  const thawDate = forceDate || (card.frozen_until && card.frozen_until <= today() ? today() : null);
+  if (!thawDate) return card;
+  const days = calendarDays(card.frozen_from, card.frozen_until && card.frozen_until < thawDate ? card.frozen_until : thawDate);
+  const endAt = card.end_at && days > 0 ? addDays(card.end_at, days) : card.end_at;
+  const status = card.card_type !== 'stored' && endAt && endAt < today() ? 'expired' : 'normal';
+  db.prepare("UPDATE member_cards SET status = ?, frozen_from = NULL, frozen_until = NULL, end_at = ?, updated_at = ? WHERE id = ?")
+    .run(status, endAt, now(), card.id);
+  const fresh = db.prepare('SELECT * FROM member_cards WHERE id = ?').get(card.id);
+  return { ...card, ...fresh };
 }
 
 function decorateCard(c) {
@@ -105,7 +128,7 @@ function listCards({ query }) {
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
     ORDER BY mc.id DESC LIMIT 1000
   `;
-  const rows = db.prepare(sql).all(...args);
+  const rows = db.prepare(sql).all(...args).map((c) => refreshFrozenCard(c));
   return ok({ list: rows.map(decorateCard) });
 }
 
@@ -118,24 +141,34 @@ function getCard({ params }) {
     WHERE mc.id = ?
   `).get(params.id);
   if (!c) return fail(404, '会员卡不存在');
-  const entries = db.prepare('SELECT * FROM entries WHERE member_card_id = ? ORDER BY id DESC LIMIT 20').all(c.id);
-  return ok({ card: decorateCard(c), entries });
+  const refreshed = refreshFrozenCard(c);
+  const entries = db.prepare('SELECT * FROM entries WHERE member_card_id = ? ORDER BY id DESC LIMIT 20').all(refreshed.id);
+  return ok({ card: decorateCard(refreshed), entries });
 }
 
 function productOf(card) {
   return card.card_product_id ? db.prepare('SELECT * FROM card_products WHERE id = ?').get(card.card_product_id) : null;
 }
 
+function memberOf(card) {
+  return card ? db.prepare('SELECT * FROM members WHERE id = ?').get(card.member_id) : null;
+}
+
 // 冻结
 function freeze({ params, body, req }) {
-  const c = db.prepare('SELECT * FROM member_cards WHERE id = ?').get(params.id);
+  const c = refreshFrozenCard(db.prepare('SELECT * FROM member_cards WHERE id = ?').get(params.id));
   if (!c) return fail(404, '会员卡不存在');
+  if (deriveStatus(c) === 'expired') return fail(400, '已过期会员卡不能冻结');
   if (c.status === 'void' || c.status === 'refunded') return fail(400, '该卡已作废或退款，不可冻结');
+  if (c.status === 'frozen') return fail(400, '该卡已经处于冻结状态');
+  const frozenUntil = (body.frozen_until || '').trim() || null;
+  if (frozenUntil && (!isDateString(frozenUntil) || frozenUntil < today())) return fail(400, '冻结截止时间格式无效或早于今天');
   const p = productOf(c);
   if (p && !p.freeze_allowed) return fail(400, '该卡项不允许冻结');
   db.prepare("UPDATE member_cards SET status = 'frozen', frozen_from = ?, frozen_until = ?, updated_at = ? WHERE id = ?")
-    .run(now(), body.frozen_until || null, now(), c.id);
-  audit.record({ req, action: '冻结会员卡', target_type: 'member_card', target_id: c.id, after: { frozen_until: body.frozen_until }, reason: body.reason });
+    .run(now(), frozenUntil, now(), c.id);
+  audit.record({ req, action: '冻结会员卡', target_type: 'member_card', target_id: c.id, after: { frozen_until: frozenUntil }, reason: body.reason });
+  sms.accountChange(memberOf(c), '会员卡冻结', `${c.card_no}已冻结${frozenUntil ? `，截止${frozenUntil}` : ''}`);
   return ok({ card: decorateCard(db.prepare('SELECT * FROM member_cards WHERE id = ?').get(c.id)) });
 }
 
@@ -144,18 +177,10 @@ function unfreeze({ params, body, req }) {
   const c = db.prepare('SELECT * FROM member_cards WHERE id = ?').get(params.id);
   if (!c) return fail(404, '会员卡不存在');
   if (c.status !== 'frozen') return fail(400, '该卡不在冻结状态');
-  let endAt = c.end_at;
-  if (c.end_at && c.frozen_from) {
-    // frozen_from 是完整 ISO 时间，不能再拼接 T00:00:00，否则会得到 Invalid Date。
-    const frozenAt = new Date(c.frozen_from).getTime();
-    const days = Number.isFinite(frozenAt) ? Math.max(0, Math.floor((Date.now() - frozenAt) / 86400000)) : 0;
-    endAt = addDays(c.end_at, days);
-  }
-  const status = ['month', 'year'].includes(c.card_type) && endAt && endAt < today() ? 'expired' : 'normal';
-  db.prepare("UPDATE member_cards SET status = ?, frozen_from = NULL, frozen_until = NULL, end_at = ?, updated_at = ? WHERE id = ?")
-    .run(status, endAt, now(), c.id);
+  const refreshed = refreshFrozenCard(c, today());
   audit.record({ req, action: '解冻会员卡', target_type: 'member_card', target_id: c.id, reason: body.reason });
-  return ok({ card: decorateCard(db.prepare('SELECT * FROM member_cards WHERE id = ?').get(c.id)) });
+  sms.accountChange(memberOf(c), '会员卡解冻', `${c.card_no}已解冻${refreshed.end_at ? `，有效期至${refreshed.end_at}` : ''}`);
+  return ok({ card: decorateCard(refreshed) });
 }
 
 // 延期
@@ -164,13 +189,15 @@ function extend({ params, body, req }) {
   if (!c) return fail(404, '会员卡不存在');
   if (['void', 'refunded'].includes(c.status)) return fail(400, '该卡已作废或退款，不可延期');
   const days = Number(body.days);
-  if (!Number.isFinite(days) || days <= 0) return fail(400, '延期天数必须大于 0');
+  if (!Number.isFinite(days) || days <= 0 || !Number.isInteger(days)) return fail(400, '延期天数必须是正整数');
+  if (c.card_type === 'stored') return fail(400, '储值卡没有有效期，无需延期');
   const p = productOf(c);
   if (p && !p.extension_allowed) return fail(400, '该卡项不允许延期');
   const base = c.end_at && c.end_at >= today() ? c.end_at : today();
   const endAt = addDays(base, days);
   db.prepare('UPDATE member_cards SET end_at = ?, updated_at = ? WHERE id = ?').run(endAt, now(), c.id);
   audit.record({ req, action: '会员卡延期', target_type: 'member_card', target_id: c.id, after: { days, end_at: endAt }, reason: body.reason });
+  sms.accountChange(memberOf(c), '会员卡延期', `${c.card_no}延期${days}天，有效期至${endAt}`);
   return ok({ card: decorateCard(db.prepare('SELECT * FROM member_cards WHERE id = ?').get(c.id)) });
 }
 
@@ -187,8 +214,11 @@ function transfer({ params, body, req }) {
   const p = productOf(c);
   if (p && !p.transfer_allowed) return fail(400, '该卡项不允许转卡');
   const fromId = c.member_id;
+  const fromMember = memberOf(c);
   db.prepare('UPDATE member_cards SET member_id = ?, updated_at = ? WHERE id = ?').run(to.id, now(), c.id);
   audit.record({ req, action: '会员卡转卡', target_type: 'member_card', target_id: c.id, before: { member_id: fromId }, after: { member_id: to.id }, reason: body.reason });
+  sms.accountChange(fromMember, '会员卡转出', `${c.card_no}已转给${to.name}`);
+  sms.accountChange(to, '会员卡转入', `${c.card_no}已由${fromMember ? fromMember.name : '原会员'}转入`);
   return ok({ card: decorateCard(db.prepare('SELECT * FROM member_cards WHERE id = ?').get(c.id)) });
 }
 
@@ -199,10 +229,12 @@ function voidCard({ params, body, req }) {
   if (['void', 'refunded'].includes(c.status)) return fail(400, '该卡已作废或退款，无需重复作废');
   db.prepare("UPDATE member_cards SET status = 'void', updated_at = ? WHERE id = ?").run(now(), c.id);
   audit.record({ req, action: '会员卡作废', target_type: 'member_card', target_id: c.id, reason: body.reason });
+  sms.accountChange(memberOf(c), '会员卡作废', `${c.card_no}已作废`);
   return ok({ card: decorateCard(db.prepare('SELECT * FROM member_cards WHERE id = ?').get(c.id)) });
 }
 
 module.exports = {
   listProducts, createProduct, updateProduct, disableProduct,
-  listCards, getCard, freeze, unfreeze, extend, transfer, voidCard
+  listCards, getCard, freeze, unfreeze, extend, transfer, voidCard,
+  refreshFrozenCard, decorateCard
 };

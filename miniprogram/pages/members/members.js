@@ -13,7 +13,12 @@ Page({
     loading: false
   },
   onShow() { this.load(); },
-  onSearchInput(e) { this.setData({ keyword: e.detail.value }); this.load(); },
+  onSearchInput(e) {
+    this.setData({ keyword: e.detail.value });
+    clearTimeout(this._searchTimer);
+    this._searchTimer = setTimeout(() => this.load(), 300);
+  },
+  onUnload() { clearTimeout(this._searchTimer); },
   onStatus(e) { this.setData({ statusIndex: Number(e.detail.value) }); this.load(); },
   load() {
     const q = [];

@@ -21,7 +21,7 @@ Page({
           expiring_cards: d.expiring_cards,
           low_balance_members: d.low_balance_members,
           blacklist_count: d.blacklist_count,
-          shift_started: !!d.current_shift
+          shift_started: !canShift || !!d.current_shift
         },
         recent: d.recent.map((r) => ({ ...r, label: r.date.slice(5), h: Math.round((r.income / max) * 100) }))
       });

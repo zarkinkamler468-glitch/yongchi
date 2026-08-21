@@ -292,7 +292,7 @@ function startShiftFromReminder() { startShift(); }
 async function renderDashboard() {
   const el = $('#view-dashboard');
   const dashboardBg = state.settings.dashboard_bg ? ` style="background-image:linear-gradient(180deg,rgba(8,30,70,.18),rgba(8,30,70,.68)),url('${esc(state.settings.dashboard_bg)}')"` : '';
-  el.innerHTML = `<div class="hero"${dashboardBg}><h2>欢迎使用${esc(state.settings.store_name || '')}系统</h2><p>纯会员制 · 今日营业概览</p></div>
+  el.innerHTML = `<div class="hero"${dashboardBg}><h2>欢迎使用${esc(state.settings.store_name || '游泳馆管理')}系统</h2><p>纯会员制 · 今日营业概览</p></div>
     <div id="dashShiftBanner"></div>
     <div class="grid cols-4 mb-16" id="dashStats"><div class="card stat"><span class="stat-label">加载中…</span></div></div>
     <div class="grid cols-3 mb-16" id="dashRemind"></div>
@@ -310,7 +310,7 @@ async function renderDashboard() {
       <div class="card stat accent"><span class="stat-label">今日收入</span><span class="stat-value num">${fmtMoney(d.today_income)}</span></div>
       <div class="card stat"><span class="stat-label">今日开卡 / 续费 / 充值</span><span class="stat-value num" style="font-size:20px">${fmtMoney(d.today_open)} / ${fmtMoney(d.today_renew)} / ${fmtMoney(d.today_recharge)}</span></div>
       <div class="card stat"><span class="stat-label">今日退款 / 入场人次</span><span class="stat-value num" style="font-size:20px">${fmtMoney(d.today_refund)} / ${fmtNum(d.today_entries)}</span></div>
-      <div class="card stat"><span class="stat-label">班次状态</span><span class="stat-value num" style="font-size:20px">${d.current_shift ? '进行中' : '未开班'}</span></div>`;
+      <div class="card stat"><span class="stat-label">班次状态</span><span class="stat-value num" style="font-size:20px">${canShift ? (d.current_shift ? '进行中' : '未开班') : '无需开班'}</span></div>`;
     $('#dashRemind').innerHTML = `
       <div class="card"><div class="stat-label">即将到期会员卡</div><div class="stat-value num">${d.expiring_cards}</div><div class="stat-extra">近 7 天</div></div>
       <div class="card"><div class="stat-label">储值余额不足会员</div><div class="stat-value num">${d.low_balance_members}</div></div>
@@ -732,7 +732,7 @@ async function submitCashier() {
   const tab = state.cashierTab;
   const memberId = state.cashierMember?.id || '';
   const payable = cashierToPay();
-  if (!(payable > 0)) { toast('实收金额必须大于 0'); return; }
+  if (!Number.isFinite(payable) || payable < 0) { toast('实收金额不能为负数'); return; }
   if (tab === 'open' && !memberId && !($('#csName')?.value || '').trim()) { toast('请选择已有会员或填写新会员姓名'); return; }
   if (['renew', 'recharge'].includes(tab) && !memberId) { toast('请先查询并选择会员'); return; }
   const body = {
@@ -742,7 +742,7 @@ async function submitCashier() {
     card_product_id: $('#csProduct')?.value ? Number($('#csProduct').value) : undefined,
     member_card_id: $('#csCard')?.value ? Number($('#csCard').value) : undefined,
     discount_amount: Number($('#csDiscount')?.value) || 0,
-    payments: [{ pay_method: state.payMethod || 'cash', amount: payable }]
+    payments: payable > 0 ? [{ pay_method: state.payMethod || 'cash', amount: payable }] : []
   };
   body.request_id = state.cashierRequestId || (state.cashierRequestId = requestId('cashier'));
   if (tab === 'recharge') body.amount = Number($('#csAmount')?.value);
@@ -795,7 +795,7 @@ async function refreshOrders() {
     <td class="num">${esc(o.order_no)}</td><td>${orderTypeBadge(o.order_type)}</td><td>${orderStatusBadge(o.status)}</td>
     <td>${esc(o.member_name)}</td><td class="num">${esc(o.card_no || '—')}</td>
      <td class="num">${fmtMoney(o.total_amount)}</td><td class="num">${fmtMoney(o.discount_amount)}</td><td class="num"><b>${fmtMoney(o.order_type === 'refund' ? -o.total_amount : o.paid_amount)}</b></td>
-    <td>${esc(o.staff_name)}</td><td class="num">${esc((o.created_at || '').replace('T', ' ').slice(0, 16))}</td>
+    <td>${esc(o.staff_name)}</td><td class="num">${esc((o.business_at || o.created_at || '').replace('T', ' ').slice(0, 16))}</td>
     <td class="ops"><button class="btn btn-sm btn-outline" data-action="openOrder" data-id="${o.id}">详情</button>
     ${['open', 'renew', 'recharge'].includes(o.order_type) && ['paid', 'partial_refund'].includes(o.status) ? `<button class="btn btn-sm btn-danger" data-action="refundApply" data-id="${o.id}">退款</button>` : ''}</td>
   </tr>`).join('') || '<tr><td colspan="11" class="empty">暂无订单</td></tr>';
@@ -892,7 +892,7 @@ async function renderShifts() {
 }
 async function refreshShifts() {
   const cur = await api('/api/shifts/current');
-  const canOperate = state.user?.role !== 'finance';
+  const canOperate = ['boss', 'frontdesk', 'admin'].includes(state.user?.role);
   $('#shiftCurrent').innerHTML = cur.shift
     ? `<div class="flex-between"><div><b>当前班次</b> · 开始于 ${esc((cur.shift.started_at || '').replace('T', ' ').slice(0, 16))}</div>
        ${canOperate ? `<button class="btn btn-success" data-action="openShiftClose" data-id="${cur.shift.id}">交班对账</button>` : ''}</div>`
@@ -1042,7 +1042,7 @@ async function refreshReports() {
   const q = new URLSearchParams({ from: $('#rpFrom').value, to: $('#rpTo').value });
   const d = await api('/api/reports/overview?' + q.toString());
   $('#rpSummary').innerHTML = `
-    <div class="card stat"><span class="stat-label">区间收入</span><span class="stat-value num">${fmtMoney(d.income)}</span></div>
+    <div class="card stat"><span class="stat-label">区间净收入</span><span class="stat-value num">${fmtMoney(d.income)}</span></div>
     <div class="card stat"><span class="stat-label">区间退款</span><span class="stat-value num">${fmtMoney(d.refund)}</span></div>
     <div class="card stat"><span class="stat-label">入场人次</span><span class="stat-value num">${fmtNum(d.entries)}</span></div>
     <div class="card stat"><span class="stat-label">新增会员</span><span class="stat-value num">${fmtNum(d.new_members)}</span></div>`;
@@ -1228,9 +1228,11 @@ async function saveSettings() {
 async function renderSmsSettings() {
   if (state.user?.role !== 'admin') { location.hash = '#/dashboard'; return; }
   const d = await api('/api/sms-settings'); const s = d.settings;
-  $('#view-sms-settings').innerHTML = `<div class="grid cols-2">
-    <div class="card"><div class="card-title">腾讯云短信账户</div>
-      <div class="field"><label><input type="checkbox" id="smsEnabled" ${s.enabled ? 'checked' : ''}> 启用会员账户变动短信</label></div>
+  $('#view-sms-settings').innerHTML = `<div class="card mb-16"><div class="flex-between"><div><div class="card-title">短信服务商</div><div class="hint">两套配置分别保存，切换后只使用当前选中的服务商。</div></div>
+      <select class="select" id="smsProvider" style="width:180px"><option value="tencent" ${s.provider !== 'aliyun' ? 'selected' : ''}>腾讯云短信</option><option value="aliyun" ${s.provider === 'aliyun' ? 'selected' : ''}>阿里云短信</option></select></div>
+      <div class="field mt-16"><label><input type="checkbox" id="smsEnabled" ${s.enabled ? 'checked' : ''}> 启用会员账户变动短信</label></div></div>
+    <div class="grid cols-2 sms-provider-panel" id="smsTencentPanel" ${s.provider === 'aliyun' ? 'hidden' : ''}>
+    <div class="card"><div class="card-title">腾讯云账户</div>
       <div class="field"><label>SecretId</label><input class="input" id="smsSecretId" type="password" placeholder="${s.secret_id ? '已配置，留空不修改' : '请输入腾讯云 SecretId'}"></div>
       <div class="field"><label>SecretKey</label><input class="input" id="smsSecretKey" type="password" placeholder="${s.secret_key ? '已配置，留空不修改' : '请输入腾讯云 SecretKey'}"></div>
       <div class="field"><label>短信 SdkAppId</label><input class="input" id="smsAppId" value="${esc(s.sdk_app_id)}" placeholder="例如 1400xxxxxx"></div>
@@ -1239,12 +1241,33 @@ async function renderSmsSettings() {
       <div class="field"><label>短信签名</label><input class="input" id="smsSignName" value="${esc(s.sign_name)}" placeholder="与腾讯云审核通过的签名完全一致"></div>
       <div class="field"><label>账户变动模板 ID</label><input class="input" id="smsTemplateId" value="${esc(s.template_account_change)}" placeholder="例如 1234567"></div>
       <div class="hint">模板变量必须依次为：{1}会员姓名、{2}业务类型、{3}变动说明。用于开卡、续费、充值、退款和入场核销通知。</div>
-      <div class="field mt-16"><label>测试接收手机号</label><input class="input" id="smsTestPhone" placeholder="仅中国大陆 11 位手机号"></div>
     </div>
-  </div><div class="mt-16 flex" style="gap:10px"><button class="btn btn-primary" data-action="saveSmsSettings">保存短信配置</button><button class="btn btn-outline" data-action="testSmsSettings">发送测试短信</button></div>`;
+  </div>
+  <div class="grid cols-2 sms-provider-panel" id="smsAliyunPanel" ${s.provider !== 'aliyun' ? 'hidden' : ''}>
+    <div class="card"><div class="card-title">阿里云账户</div>
+      <div class="field"><label>AccessKey ID</label><input class="input" id="aliyunAccessKeyId" type="password" placeholder="${s.aliyun_access_key_id ? '已配置，留空不修改' : '请输入 RAM 用户 AccessKey ID'}"></div>
+      <div class="field"><label>AccessKey Secret</label><input class="input" id="aliyunAccessKeySecret" type="password" placeholder="${s.aliyun_access_key_secret ? '已配置，留空不修改' : '请输入 AccessKey Secret'}"></div>
+    </div>
+    <div class="card"><div class="card-title">阿里云签名与模板</div>
+      <div class="field"><label>短信签名</label><input class="input" id="aliyunSignName" value="${esc(s.aliyun_sign_name)}" placeholder="审核通过的签名，不加【】"></div>
+      <div class="field"><label>账户变动模板 CODE</label><input class="input" id="aliyunTemplateId" value="${esc(s.aliyun_template_account_change)}" placeholder="例如 SMS_123456789"></div>
+      <div class="hint">阿里云模板变量固定为：&#36;{name} 会员姓名、&#36;{type} 业务类型、&#36;{detail} 变动说明。变量名称必须完全一致。</div>
+    </div>
+  </div>
+  <div class="card mt-16"><div class="field"><label>测试接收手机号</label><input class="input" id="smsTestPhone" placeholder="仅中国大陆 11 位手机号"></div>
+    <div class="flex" style="gap:10px"><button class="btn btn-primary" data-action="saveSmsSettings">保存短信配置</button><button class="btn btn-outline" data-action="testSmsSettings">按当前服务商发送测试短信</button></div></div>`;
+  $('#smsProvider').addEventListener('change', () => {
+    const aliyun = $('#smsProvider').value === 'aliyun';
+    $('#smsTencentPanel').hidden = aliyun; $('#smsAliyunPanel').hidden = !aliyun;
+  });
 }
 async function saveSmsSettings() {
-  try { await api('/api/sms-settings', { method: 'PUT', body: { enabled: $('#smsEnabled').checked, secret_id: $('#smsSecretId').value, secret_key: $('#smsSecretKey').value, sdk_app_id: $('#smsAppId').value, sign_name: $('#smsSignName').value, template_account_change: $('#smsTemplateId').value } }); toast('短信配置已保存'); renderSmsSettings(); } catch (e) { toast(e.message, 'error'); }
+  try { await api('/api/sms-settings', { method: 'PUT', body: {
+    enabled: $('#smsEnabled').checked, provider: $('#smsProvider').value,
+    secret_id: $('#smsSecretId').value, secret_key: $('#smsSecretKey').value, sdk_app_id: $('#smsAppId').value, sign_name: $('#smsSignName').value, template_account_change: $('#smsTemplateId').value,
+    aliyun_access_key_id: $('#aliyunAccessKeyId').value, aliyun_access_key_secret: $('#aliyunAccessKeySecret').value,
+    aliyun_sign_name: $('#aliyunSignName').value, aliyun_template_account_change: $('#aliyunTemplateId').value
+  } }); toast('短信配置已保存'); renderSmsSettings(); } catch (e) { toast(e.message, 'error'); }
 }
 async function testSmsSettings() {
   try { await api('/api/sms-settings/test', { body: { phone: $('#smsTestPhone').value } }); toast('测试短信已提交，请查收'); } catch (e) { toast(e.message, 'error'); }

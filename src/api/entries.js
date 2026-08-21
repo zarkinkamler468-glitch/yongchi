@@ -1,14 +1,16 @@
 'use strict';
 
-const { db } = require('../db');
+const crypto = require('node:crypto');
+const { db, getSetting } = require('../db');
 const { today, now, money } = require('../util');
 const { ok, fail } = require('../http');
 const audit = require('./audit');
 const sms = require('../sms');
+const { refreshFrozenCard } = require('./cards');
 
 function memberByKeyword(kw) {
   const normalized = String(kw || '').trim().replace(/[\s-]/g, '');
-  const card = db.prepare('SELECT * FROM member_cards WHERE REPLACE(REPLACE(card_no, \' \', \'\'), \'-\', \'\') = ?').get(normalized);
+  const card = refreshFrozenCard(db.prepare('SELECT * FROM member_cards WHERE REPLACE(REPLACE(card_no, \' \', \'\'), \'-\', \'\') = ?').get(normalized));
   if (card) return { member: db.prepare('SELECT * FROM members WHERE id = ?').get(card.member_id), card };
   let m = db.prepare('SELECT * FROM members WHERE REPLACE(REPLACE(phone, \' \', \'\'), \'-\', \'\') = ?').get(normalized);
   if (m) return { member: m };
@@ -19,7 +21,7 @@ function memberByKeyword(kw) {
 
 function cardUsable(c) {
   if (['void', 'refunded', 'frozen'].includes(c.status)) return { ok: false, reason: '卡状态异常' };
-  if (['month', 'year'].includes(c.card_type) && c.end_at && c.end_at < today()) return { ok: false, reason: '卡已过期' };
+  if (c.card_type !== 'stored' && c.end_at && c.end_at < today()) return { ok: false, reason: '卡已过期' };
   if (c.card_type === 'count' && c.remaining_uses <= 0) return { ok: false, reason: '次数已用尽' };
   return { ok: true };
 }
@@ -36,7 +38,7 @@ function cardSummary(c) {
 function resolveUsableCard(member, specified) {
   let card = specified || null;
   if (!card || !cardUsable(card).ok) {
-    const cards = db.prepare('SELECT * FROM member_cards WHERE member_id = ? ORDER BY id').all(member.id);
+    const cards = db.prepare('SELECT * FROM member_cards WHERE member_id = ? ORDER BY id').all(member.id).map(refreshFrozenCard);
     card = cards.find((c) => cardUsable(c).ok) || null;
   }
   return card;
@@ -56,7 +58,7 @@ function preview({ query }) {
   if (member.status === 'inactive') return fail(400, '会员已停用');
   let specifiedCard = found.card || null;
   if (requestedCardId) {
-    specifiedCard = db.prepare('SELECT * FROM member_cards WHERE id = ? AND member_id = ?').get(requestedCardId, member.id);
+    specifiedCard = refreshFrozenCard(db.prepare('SELECT * FROM member_cards WHERE id = ? AND member_id = ?').get(requestedCardId, member.id));
     if (!specifiedCard) return fail(404, '指定会员卡不存在或不属于该会员');
     if (found.card && Number(found.card.id) !== requestedCardId) return fail(400, '查询卡号与指定会员卡不一致');
   }
@@ -67,7 +69,10 @@ function preview({ query }) {
   const summary = cardSummary(card);
   summary.people = people;
   summary.preview_deducted_uses = card.card_type === 'count' ? people : 0;
-  summary.preview_deducted_amount = card.card_type === 'stored' ? money((money(card.entry_fee) || 30) * people) : 0;
+  const entryFee = money(card.entry_fee) > 0 ? money(card.entry_fee) : money(getSetting('default_entry_fee'));
+  summary.preview_deducted_amount = card.card_type === 'stored' ? money(entryFee * people) : 0;
+  if (card.card_type === 'count' && Number(card.remaining_uses) < people) return fail(400, '剩余次数不足');
+  if (card.card_type === 'stored' && Number(card.balance) < summary.preview_deducted_amount) return fail(400, '储值余额不足');
   return ok({ member: { id: member.id, name: member.name, member_no: member.member_no, phone: member.phone, status: member.status }, card: summary });
 }
 
@@ -102,13 +107,14 @@ function checkin({ body, req }) {
   const member = found.member;
   const requestedCardId = Number(body.card_id) || null;
   if (requestedCardId) {
-    const specifiedCard = db.prepare('SELECT * FROM member_cards WHERE id = ? AND member_id = ?').get(requestedCardId, member.id);
+    const specifiedCard = refreshFrozenCard(db.prepare('SELECT * FROM member_cards WHERE id = ? AND member_id = ?').get(requestedCardId, member.id));
     if (!specifiedCard) return fail(404, '指定会员卡不存在或不属于该会员');
     if (found.card && Number(found.card.id) !== requestedCardId) return fail(400, '查询卡号与指定会员卡不一致');
     found.card = specifiedCard;
   }
   const staff = req.user;
   const requestId = String(body.request_id || '').trim() || null;
+  const requestHash = crypto.createHash('sha256').update(JSON.stringify({ keyword: keyword.replace(/[\s-]/g, ''), card_id: requestedCardId, people: Math.max(1, Math.floor(Number(body.people) || 1)), gate_no: String(body.gate_no || '').trim() || '前台' })).digest('hex');
   if (requestId && requestId.length > 100) return fail(400, '请求编号格式无效');
   const gateNo = (body.gate_no || '').trim() || '前台';
   const people = Math.max(1, Math.floor(Number(body.people) || 1));
@@ -121,6 +127,10 @@ function checkin({ body, req }) {
   if (requestId) {
     const existing = db.prepare("SELECT * FROM entries WHERE request_id = ? AND staff_id = ? AND result = 'success'").get(requestId, staff.id);
     if (existing) {
+      if (existing.request_hash && existing.request_hash !== requestHash) {
+        db.exec('ROLLBACK');
+        return fail(409, '请求编号已用于其他核销操作，请重新查询后再试');
+      }
       if (Number(existing.member_id) !== Number(member.id)) {
         db.exec('ROLLBACK');
         return fail(409, '请求编号已用于其他会员核销');
@@ -156,7 +166,7 @@ function checkin({ body, req }) {
   let card = found.card || null;
   if (requestedCardId && card && !cardUsable(card).ok) return recordFail(cardUsable(card).reason);
   if (!card || !cardUsable(card).ok) {
-    const cards = db.prepare('SELECT * FROM member_cards WHERE member_id = ? ORDER BY id').all(member.id);
+    const cards = db.prepare('SELECT * FROM member_cards WHERE member_id = ? ORDER BY id').all(member.id).map(refreshFrozenCard);
     card = null;
     for (const c of cards) {
       const u = cardUsable(c);
@@ -183,7 +193,7 @@ function checkin({ body, req }) {
     if (card.end_at && card.end_at < today()) return recordFail('卡已过期');
     chargeType = card.card_type;
   } else if (card.card_type === 'stored') {
-    const fee = money(card.entry_fee) || money(30);
+    const fee = money(card.entry_fee) > 0 ? money(card.entry_fee) : money(getSetting('default_entry_fee'));
     const totalFee = money(fee * people);
     if (card.balance < totalFee) return recordFail('储值余额不足');
     const changed = db.prepare('UPDATE member_cards SET balance = balance - ?, updated_at = ? WHERE id = ? AND balance >= ?').run(totalFee, ts, card.id, totalFee);
@@ -194,16 +204,16 @@ function checkin({ body, req }) {
     return recordFail('未知卡种');
   }
 
-  db.prepare(`INSERT INTO entries(member_id, member_card_id, charge_type, deducted_uses, deducted_amount, gate_no, result, fail_reason, entry_at, staff_id, request_id)
-    VALUES (?, ?, ?, ?, ?, ?, 'success', NULL, ?, ?, ?)`)
-    .run(member.id, card.id, chargeType, deductedUses, deductedAmount, gateNo, ts, staff.id, requestId);
+  db.prepare(`INSERT INTO entries(member_id, member_card_id, charge_type, deducted_uses, deducted_amount, gate_no, result, fail_reason, entry_at, staff_id, request_id, request_hash)
+    VALUES (?, ?, ?, ?, ?, ?, 'success', NULL, ?, ?, ?, ?)`)
+    .run(member.id, card.id, chargeType, deductedUses, deductedAmount, gateNo, ts, staff.id, requestId, requestHash);
 
   const refreshedCard = db.prepare('SELECT * FROM member_cards WHERE id = ?').get(card.id);
   audit.record({ req, action: '入场核销', target_type: 'member', target_id: member.id, after: { card_id: card.id, charge_type: chargeType, deducted_uses: deductedUses, deducted_amount: deductedAmount } });
+  db.exec('COMMIT');
+
   const detail = chargeType === 'count' ? `入场核销，扣减${deductedUses}次，剩余${refreshedCard.remaining_uses}次` : chargeType === 'stored' ? `入场核销，扣减${deductedAmount}元，余额${refreshedCard.balance}元` : '入场核销成功';
   sms.accountChange(member, '入场核销', detail);
-
-  db.exec('COMMIT');
 
   return ok({
     member: { id: member.id, name: member.name, member_no: member.member_no, phone: member.phone, status: member.status },

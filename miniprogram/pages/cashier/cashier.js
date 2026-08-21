@@ -17,6 +17,7 @@ Page({
     payManual: false, submitting: false, checkinSubmitting: false, requestId: '', checkinRequestId: ''
   },
   onShow() { this.loadBase(); },
+  onUnload() { clearTimeout(this._memberSearchTimer); },
   loadBase() {
     request('/api/card-products').then((p) => {
       const products = (p.list || []).filter((x) => x.enabled);
@@ -110,7 +111,7 @@ Page({
     const memberId = selectedMember && selectedMember.id;
     const selectedCard = cards[cardIndex];
     const payable = Number(payAmount);
-    if (!(payable > 0)) { toast('实收金额必须大于 0'); return; }
+    if (!Number.isFinite(payable) || payable < 0) { toast('实收金额不能为负数'); return; }
     if (tab === 'open' && !memberId && !newName.trim()) { toast('请选择已有会员或填写新会员姓名'); return; }
     if (['renew', 'recharge'].includes(tab) && !memberId) { toast('请先查询并选择会员'); return; }
     if (['renew', 'recharge'].includes(tab) && selectedCard && ['void', 'refunded', 'frozen'].includes(selectedCard.status)) { toast('已作废、退款或冻结的卡不可办理'); return; }
@@ -121,7 +122,7 @@ Page({
       card_product_id: products[productIndex] ? products[productIndex].id : undefined,
       member_card_id: cards[cardIndex] ? cards[cardIndex].id : undefined,
       discount_amount: Number(discount) || 0,
-      payments: [{ pay_method: payMethod, amount: payable }]
+      payments: payable > 0 ? [{ pay_method: payMethod, amount: payable }] : []
     };
     const rid = this.data.requestId || `cashier-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     body.request_id = rid;

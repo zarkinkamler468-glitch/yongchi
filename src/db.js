@@ -23,20 +23,14 @@ db.exec(`CREATE TABLE IF NOT EXISTS settings (
   value TEXT
 );`);
 
-// 一次性迁移：旧版（散客/课程/季卡模型）表直接清理
+// 版本标记：新数据库直接进入当前结构；旧版数据库绝不自动删表。
 const migrated = db.prepare("SELECT value FROM settings WHERE key = 'schema_v05'").get();
 if (!migrated) {
-  db.exec(`
-    DROP TABLE IF EXISTS transactions;
-    DROP TABLE IF EXISTS checkins;
-    DROP TABLE IF EXISTS coaches;
-    DROP TABLE IF EXISTS courses;
-    DROP TABLE IF EXISTS enrollments;
-    DROP TABLE IF EXISTS users;
-    DROP TABLE IF EXISTS sessions;
-    DROP TABLE IF EXISTS audit_logs;
-    DROP TABLE IF EXISTS members;
-  `);
+  const existingTables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'settings'").all();
+  if (existingTables.length) {
+    db.close();
+    throw new Error('检测到未迁移的旧版数据库。为防止会员和账务数据丢失，系统已停止启动；请先备份数据库并执行人工迁移，程序不会自动删除旧表。');
+  }
   db.prepare("INSERT INTO settings(key, value) VALUES ('schema_v05', '1')").run();
 }
 
@@ -215,12 +209,21 @@ ensureColumn('orders', 'benefit_amount', 'benefit_amount REAL NOT NULL DEFAULT 0
 ensureColumn('orders', 'benefit_days', 'benefit_days INTEGER NOT NULL DEFAULT 0');
 ensureColumn('orders', 'approved_at', 'approved_at TEXT');
 ensureColumn('orders', 'request_id', 'request_id TEXT');
+ensureColumn('orders', 'request_hash', 'request_hash TEXT');
 ensureColumn('payments', 'source_card_id', 'source_card_id INTEGER');
 ensureColumn('entries', 'request_id', 'request_id TEXT');
+ensureColumn('entries', 'request_hash', 'request_hash TEXT');
 db.exec('DROP INDEX IF EXISTS idx_orders_request_id;');
 db.exec('DROP INDEX IF EXISTS idx_entries_request_id;');
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_staff_request_id ON orders(staff_id, request_id) WHERE request_id IS NOT NULL;');
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_staff_request_id ON entries(staff_id, request_id) WHERE request_id IS NOT NULL;');
+db.exec('CREATE INDEX IF NOT EXISTS idx_members_phone ON members(phone);');
+db.exec('CREATE INDEX IF NOT EXISTS idx_member_cards_member ON member_cards(member_id);');
+db.exec('CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at);');
+db.exec('CREATE INDEX IF NOT EXISTS idx_orders_member ON orders(member_id);');
+db.exec('CREATE INDEX IF NOT EXISTS idx_orders_original ON orders(original_order_id);');
+db.exec('CREATE INDEX IF NOT EXISTS idx_payments_order_paid_at ON payments(order_id, paid_at);');
+db.exec('CREATE INDEX IF NOT EXISTS idx_entries_member_entry_at ON entries(member_id, entry_at);');
 
 // 兼容旧订单：新增退款权益快照字段后，为仍未发生退款的历史订单尽可能回填卡项权益。
 // 已经产生部分退款的订单不强行重算，避免改变既有账务结果。
@@ -253,11 +256,16 @@ const DEFAULT_SETTINGS = {
   icp_no: '',               // ICP 备案号（登录页底部预留）
   public_security_no: '',   // 公安网安备案号（登录页底部预留）
   sms_enabled: '0',
+  sms_provider: 'tencent',
   sms_secret_id: '',
   sms_secret_key: '',
   sms_sdk_app_id: '',
   sms_sign_name: '',
-  sms_template_account_change: ''
+  sms_template_account_change: '',
+  aliyun_access_key_id: '',
+  aliyun_access_key_secret: '',
+  aliyun_sign_name: '',
+  aliyun_template_account_change: ''
 };
 
 function initSettings() {

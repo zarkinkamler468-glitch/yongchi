@@ -5,6 +5,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const { DatabaseSync } = require('node:sqlite');
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pms-test-'));
 process.env.PMS_DB_PATH = path.join(testDir, 'pool-test.db');
@@ -13,13 +15,17 @@ process.env.PMS_SEED_DEMO = '0';
 const { db } = require('../src/db');
 const orders = require('../src/api/orders');
 const reports = require('../src/api/reports');
+const closingsApi = require('../src/api/closings');
 const staffApi = require('../src/api/staff');
 const membersApi = require('../src/api/members');
 const entriesApi = require('../src/api/entries');
 const settingsApi = require('../src/api/settings');
+const smsSettingsApi = require('../src/api/sms-settings');
+const sms = require('../src/sms');
 const shiftsApi = require('../src/api/shifts');
 const cardsApi = require('../src/api/cards');
-const { today, addDays } = require('../src/util');
+const { createSession, findStaffByToken } = require('../src/auth');
+const { today, addDays, money } = require('../src/util');
 
 const staff = Object.fromEntries(db.prepare('SELECT * FROM staff').all().map((s) => [s.role, s]));
 const req = (role) => ({ user: staff[role], socket: { remoteAddress: '127.0.0.1' } });
@@ -245,8 +251,8 @@ test('开班备用金计入应交现金', () => {
 });
 
 test('前台不能查看其他员工班次详情', () => {
-  const financeShift = shiftsApi.start({ req: req('finance'), body: { opening_cash: 0 } }).body.shift;
-  const result = shiftsApi.get({ params: { id: financeShift.id }, req: req('frontdesk') });
+  const bossShift = shiftsApi.start({ req: req('boss'), body: { opening_cash: 0 } }).body.shift;
+  const result = shiftsApi.get({ params: { id: bossShift.id }, req: req('frontdesk') });
   assert.equal(result.status, 403);
 });
 
@@ -266,4 +272,192 @@ test('储值余额内部消费不会重复计入实际收入', () => {
   assert.equal(sale.status, 201, sale.body.error);
   const after = reports.dashboard({ req: req('boss') }).body.today_income;
   assert.equal(after, before);
+});
+
+test('超管可以保存阿里云配置并切换短信服务商', () => {
+  const saved = smsSettingsApi.update({ body: {
+    enabled: true, provider: 'aliyun', aliyun_access_key_id: 'test-key-id', aliyun_access_key_secret: 'test-key-secret',
+    aliyun_sign_name: '测试签名', aliyun_template_account_change: 'SMS_123456789'
+  } });
+  assert.equal(saved.status, 200, saved.body.error);
+  assert.equal(saved.body.settings.provider, 'aliyun');
+  assert.equal(saved.body.settings.aliyun_access_key_id, '已配置');
+  assert.equal(saved.body.settings.aliyun_access_key_secret, '已配置');
+  assert.equal(saved.body.settings.aliyun_template_account_change, 'SMS_123456789');
+  smsSettingsApi.update({ body: { enabled: false, provider: 'aliyun' } });
+});
+
+test('阿里云签名编码符合 RFC3986 特殊字符要求', () => {
+  assert.equal(sms.aliyunEncode("!*'()"), '%21%2A%27%28%29');
+  assert.equal(sms.aliyunEncode('a b+c'), 'a%20b%2Bc');
+});
+
+test('有有效期的次卡过期后不能核销', () => {
+  const order = openCard({ name: '过期次卡', phone: '13900000017', type: 'count' });
+  db.prepare("UPDATE member_cards SET end_at = ? WHERE id = ?").run(addDays(today(), -1), order.member_card_id);
+  const memberNo = db.prepare('SELECT member_no FROM members WHERE id = ?').get(order.member_id).member_no;
+  const result = entriesApi.preview({ query: new URLSearchParams({ keyword: memberNo }) });
+  assert.equal(result.status, 400);
+  assert.match(result.body.error, /过期|无有效/);
+});
+
+test('储值卡使用后台默认扣费金额且预览会校验余额', () => {
+  db.prepare("UPDATE settings SET value = '7.50' WHERE key = 'default_entry_fee'").run();
+  db.prepare("UPDATE card_products SET entry_fee = 0 WHERE type = 'stored'").run();
+  const order = openCard({ name: '默认扣费', phone: '13900000018', type: 'stored' });
+  db.prepare('UPDATE member_cards SET balance = 20, entry_fee = 0 WHERE id = ?').run(order.member_card_id);
+  const memberNo = db.prepare('SELECT member_no FROM members WHERE id = ?').get(order.member_id).member_no;
+  const preview = entriesApi.preview({ query: new URLSearchParams({ keyword: memberNo, people: '2' }) });
+  assert.equal(preview.status, 200, preview.body.error);
+  assert.equal(preview.body.card.preview_deducted_amount, 15);
+  db.prepare("UPDATE settings SET value = '30' WHERE key = 'default_entry_fee'").run();
+  db.prepare("UPDATE card_products SET entry_fee = 30 WHERE type = 'stored'").run();
+});
+
+test('财务不参与班次且财务审批退款不会创建或改写班次', () => {
+  const order = openCard({ name: '退款班次', phone: '13900000019', type: 'count' });
+  const originalShiftId = order.shift_id;
+  db.prepare("UPDATE shifts SET status = 'closed', ended_at = ? WHERE id = ?").run(new Date().toISOString(), originalShiftId);
+  const refund = requestRefund(order, 10);
+  const self = orders.refundApprove({ params: { id: refund.id }, body: { refund_method: 'cash' }, req: req('frontdesk') });
+  assert.equal(self.status, 403);
+  assert.equal(shiftsApi.start({ req: req('finance'), body: { opening_cash: 0 } }).status, 403);
+  assert.equal(shiftsApi.current({ req: req('finance') }).status, 403);
+  const approved = orders.refundApprove({ params: { id: refund.id }, body: { refund_method: 'cash' }, req: req('finance') });
+  assert.equal(approved.status, 200, approved.body.error);
+  const shiftId = db.prepare('SELECT shift_id FROM orders WHERE id = ?').get(refund.id).shift_id;
+  assert.equal(shiftId, null);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM shifts WHERE staff_id = ? AND status = 'active'").get(staff.finance.id).n, 0);
+  assert.equal(db.prepare('SELECT status FROM shifts WHERE id = ?').get(originalShiftId).status, 'closed');
+
+  const query = new URLSearchParams({ from: today(), to: today() });
+  const overview = reports.overview({ query });
+  assert.equal(overview.status, 200);
+  assert.ok(overview.body.refund >= 10);
+});
+
+test('已通过退款按审批时间筛选并与流水显示时间一致', () => {
+  const order = openCard({ name: '退款业务时间', phone: '13900000022', type: 'count' });
+  const refund = requestRefund(order, 10);
+  const approved = approveRefund(refund, 'finance');
+  assert.equal(approved.status, 200, approved.body.error);
+  const oldDate = addDays(today(), -3);
+  db.prepare('UPDATE orders SET created_at = ? WHERE id = ?').run(oldDate + 'T08:00:00', refund.id);
+  const list = orders.list({ query: new URLSearchParams({ order_type: 'refund', from: today(), to: today() }), req: req('boss') });
+  const row = list.body.list.find((x) => x.id === refund.id);
+  assert.ok(row);
+  assert.equal(row.business_at, row.approved_at);
+});
+
+test('已过期会员卡不能冻结', () => {
+  const order = openCard({ name: '过期冻结', phone: '13900000023', type: 'count' });
+  db.prepare('UPDATE member_cards SET end_at = ? WHERE id = ?').run(addDays(today(), -1), order.member_card_id);
+  const result = cardsApi.freeze({ params: { id: order.member_card_id }, body: {}, req: req('boss') });
+  assert.equal(result.status, 400);
+  assert.match(result.body.error, /过期/);
+});
+
+test('冻结到期后自动解冻并按实际冻结天数顺延', () => {
+  const order = openCard({ name: '自动解冻', phone: '13900000024', type: 'count' });
+  const before = db.prepare('SELECT end_at FROM member_cards WHERE id = ?').get(order.member_card_id).end_at;
+  db.prepare("UPDATE member_cards SET status='frozen', frozen_from=?, frozen_until=? WHERE id=?")
+    .run(addDays(today(), -1) + 'T08:00:00', today(), order.member_card_id);
+  const result = cardsApi.getCard({ params: { id: order.member_card_id } });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.card.status, 'normal');
+  assert.equal(result.body.card.end_at, addDays(before, 1));
+});
+
+test('会员卡转给其他会员后阻止原订单直接退款', () => {
+  const order = openCard({ name: '转卡原会员', phone: '13900000025', type: 'count' });
+  const target = membersApi.create({ body: { name: '转卡接收人', phone: '13900000026' }, req: req('frontdesk') });
+  assert.equal(target.status, 201);
+  assert.equal(cardsApi.transfer({ params: { id: order.member_card_id }, body: { to_member_id: target.body.member.id }, req: req('boss') }).status, 200);
+  const refund = requestRefund(order, 10);
+  const approved = approveRefund(refund, 'finance');
+  assert.equal(approved.status, 400);
+  assert.match(approved.body.error, /转给其他会员/);
+});
+
+test('员工重置密码后该员工旧会话立即失效', () => {
+  const username = 'session_test_user';
+  const created = staffApi.create({ body: { username, real_name: '会话测试员工', password: 'OldPassword123', role: 'frontdesk' }, req: req('boss') });
+  assert.equal(created.status, 201);
+  const token = createSession(created.body.staff.id).token;
+  assert.ok(findStaffByToken(token));
+  const updated = staffApi.update({ params: { id: created.body.staff.id }, body: { username, real_name: '会话测试员工', role: 'frontdesk', status: 'active', password: 'NewPassword123' }, req: req('boss') });
+  assert.equal(updated.status, 200);
+  assert.equal(findStaffByToken(token), null);
+});
+
+test('经营报表卡种、支付方式、员工分项均与净收入对齐', () => {
+  const overview = reports.overview({ query: new URLSearchParams({ from: today(), to: today() }) });
+  assert.equal(overview.status, 200);
+  const sum = (rows) => money(rows.reduce((n, x) => n + Number(x.amount || 0), 0));
+  assert.equal(sum(overview.body.by_card), overview.body.income);
+  assert.equal(sum(overview.body.by_pay), overview.body.income);
+  assert.equal(sum(overview.body.by_staff), overview.body.income);
+});
+
+test('会员卡人工账户变动会触发短信通知事件', () => {
+  const order = openCard({ name: '卡变动短信', phone: '13900000027', type: 'count' });
+  const events = [];
+  const original = sms.accountChange;
+  sms.accountChange = (member, event, detail) => events.push({ member, event, detail });
+  try {
+    const frozen = cardsApi.freeze({ params: { id: order.member_card_id }, body: { frozen_until: addDays(today(), 1) }, req: req('boss') });
+    assert.equal(frozen.status, 200);
+    const unfrozen = cardsApi.unfreeze({ params: { id: order.member_card_id }, body: {}, req: req('boss') });
+    assert.equal(unfrozen.status, 200);
+  } finally {
+    sms.accountChange = original;
+  }
+  assert.deepEqual(events.map((x) => x.event), ['会员卡冻结', '会员卡解冻']);
+  assert.ok(events.every((x) => x.member.phone === '13900000027'));
+});
+
+test('财务执行历史日结不需要也不会生成班次', () => {
+  const date = addDays(today(), -10);
+  const before = db.prepare('SELECT COUNT(*) n FROM shifts WHERE staff_id = ?').get(staff.finance.id).n;
+  const result = closingsApi.create({ body: { business_date: date }, req: req('finance') });
+  assert.equal(result.status, 200);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM shifts WHERE staff_id = ?').get(staff.finance.id).n, before);
+});
+
+test('系统设置拒绝空门店名称', () => {
+  const result = settingsApi.update({ body: { store_name: '   ' }, req: req('admin') });
+  assert.equal(result.status, 400);
+  assert.match(result.body.error, /门店名称不能为空/);
+});
+
+test('检测到未迁移旧库时停止启动且绝不删除旧表数据', () => {
+  const legacyPath = path.join(testDir, 'legacy-protection.db');
+  const legacy = new DatabaseSync(legacyPath);
+  legacy.exec("CREATE TABLE members(id INTEGER PRIMARY KEY, name TEXT); INSERT INTO members(name) VALUES ('旧会员');");
+  legacy.close();
+  const dbModule = path.resolve(__dirname, '../src/db.js');
+  const script = `process.env.PMS_DB_PATH=process.argv[1]; require(${JSON.stringify(dbModule)});`;
+  const started = spawnSync(process.execPath, ['-e', script, legacyPath], { encoding: 'utf8' });
+  assert.notEqual(started.status, 0);
+  assert.match((started.stderr || '') + (started.stdout || ''), /未迁移的旧版数据库/);
+  const verify = new DatabaseSync(legacyPath);
+  assert.equal(verify.prepare('SELECT name FROM members').get().name, '旧会员');
+  verify.close();
+});
+
+test('相同请求编号参数变化时拒绝复用', () => {
+  const p = product('count');
+  const body = { order_type: 'open', name: '幂等指纹', phone: '13900000020', card_product_id: p.id, request_id: 'fingerprint-request', payments: [{ pay_method: 'cash', amount: p.price }] };
+  assert.equal(orders.create({ body, req: req('frontdesk') }).status, 201);
+  const changed = orders.create({ body: { ...body, name: '其他会员' }, req: req('frontdesk') });
+  assert.equal(changed.status, 409);
+});
+
+test('全额优惠订单允许零元完成且不生成支付流水', () => {
+  const p = product('count');
+  const result = orders.create({ body: { order_type: 'open', name: '零元订单', phone: '13900000021', card_product_id: p.id, discount_amount: p.price, payments: [] }, req: req('frontdesk') });
+  assert.equal(result.status, 201, result.body.error);
+  const order = db.prepare('SELECT * FROM orders WHERE order_no = ?').get(result.body.order_no);
+  assert.equal(order.paid_amount, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM payments WHERE order_id = ?').get(order.id).n, 0);
 });

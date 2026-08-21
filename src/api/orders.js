@@ -1,14 +1,24 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const { db, getSetting } = require('../db');
 const { today, now, money, addDays } = require('../util');
 const { ok, fail, httpError } = require('../http');
 const { nextOrderNo, nextCardNo, resolveMember, ensureShift, computeCardEnd } = require('./common');
 const audit = require('./audit');
 const sms = require('../sms');
+const { refreshFrozenCard } = require('./cards');
 
 const ORDER_TYPES = ['open', 'renew', 'recharge', 'refund'];
 const PAY_METHODS = ['cash', 'wechat', 'alipay', 'stored'];
+
+function requestHash(kind, body) {
+  const payments = Array.isArray(body.payments) ? body.payments.map((p) => ({ method: p.pay_method || '', amount: money(p.amount), no: String(p.transaction_no || '') })) : [];
+  const payload = kind === 'refund'
+    ? { kind, amount: body.amount === undefined || body.amount === '' ? null : money(body.amount), reason: String(body.reason || '').trim() }
+    : { kind, member_id: Number(body.member_id) || null, name: String(body.name || '').trim(), phone: String(body.phone || '').replace(/[\s-]/g, ''), gender: body.gender || '', product: Number(body.card_product_id) || null, card: Number(body.member_card_id) || null, amount: money(body.amount), discount: money(body.discount_amount), payments };
+  return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+}
 
 function orderById(id) { return db.prepare('SELECT * FROM orders WHERE id = ?').get(id); }
 
@@ -69,7 +79,8 @@ function decorateOrder(o) {
   const m = db.prepare('SELECT name, member_no, phone FROM members WHERE id = ?').get(o.member_id);
   const card = o.member_card_id ? db.prepare('SELECT card_no, card_type FROM member_cards WHERE id = ?').get(o.member_card_id) : null;
   const s = db.prepare('SELECT real_name FROM staff WHERE id = ?').get(o.staff_id);
-  return { ...o, member_name: m ? m.name : '—', member_no: m ? m.member_no : '', card_no: card ? card.card_no : '', staff_name: s ? s.real_name : '' };
+  const businessAt = o.order_type === 'refund' && o.status === 'paid' ? (o.approved_at || o.created_at) : o.created_at;
+  return { ...o, business_at: businessAt, member_name: m ? m.name : '—', member_no: m ? m.member_no : '', card_no: card ? card.card_no : '', staff_name: s ? s.real_name : '' };
 }
 
 // 扣减储值余额（支付方式为“储值”时）
@@ -107,10 +118,12 @@ function list({ query, req }) {
     where.push('(m.name LIKE ? OR m.member_no LIKE ? OR m.phone LIKE ?)');
     const like = `%${search}%`; args.push(like, like, like);
   }
+  // 已通过退款以审批通过时间入账，流水筛选也使用同一业务时间，才能和日报、报表对账。
+  const businessTime = "CASE WHEN o.order_type = 'refund' AND o.status = 'paid' THEN COALESCE(o.approved_at, o.created_at) ELSE o.created_at END";
   const from = query.get('from');
-  if (from) { where.push('o.created_at >= ?'); args.push(from); }
+  if (from) { where.push(businessTime + ' >= ?'); args.push(from); }
   const to = query.get('to');
-  if (to) { where.push('o.created_at <= ?'); args.push(to + 'T23:59:59'); }
+  if (to) { where.push(businessTime + ' <= ?'); args.push(to + 'T23:59:59'); }
   const sql = 'SELECT o.* FROM orders o LEFT JOIN members m ON m.id = o.member_id' + (where.length ? ' WHERE ' + where.join(' AND ') : '') + ' ORDER BY o.id DESC LIMIT 1000';
   const rows = db.prepare(sql).all(...args);
   return ok({ list: rows.map(decorateOrder), total: rows.length });
@@ -131,10 +144,12 @@ function create({ body, req }) {
   db.exec('BEGIN IMMEDIATE');
   try {
   const requestId = String(body.request_id || '').trim() || null;
+  const fingerprint = requestHash(body.order_type, body);
   if (requestId && requestId.length > 100) throw httpError(400, '请求编号格式无效');
   if (requestId) {
     const existing = db.prepare("SELECT * FROM orders WHERE request_id = ? AND staff_id = ? AND order_type IN ('open','renew','recharge')").get(requestId, req.user.id);
     if (existing) {
+      if (existing.request_hash && existing.request_hash !== fingerprint) throw httpError(409, '请求编号已用于其他收银操作，请刷新后重试');
       db.exec('COMMIT');
       return ok({ order: decorateOrder(existing), order_no: existing.order_no, amount: existing.paid_amount, repeated: true });
     }
@@ -165,10 +180,10 @@ function create({ body, req }) {
     const r = db.prepare(`INSERT INTO member_cards(member_id, card_product_id, card_no, card_type, start_at, end_at, remaining_uses, balance, entry_fee, status, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'normal', ?, ?)`)
       .run(member.id, cp.id, nextCardNo(), cp.type, today(), cardEnd,
-        cp.total_uses || 0, money(cp.stored_value), money(cp.entry_fee), ts, ts);
+        cp.total_uses || 0, money(cp.stored_value), cp.type === 'stored' && money(cp.entry_fee) <= 0 ? money(getSetting('default_entry_fee')) : money(cp.entry_fee), ts, ts);
     memberCardId = Number(r.lastInsertRowid);
   } else if (orderType === 'renew') {
-    const card = db.prepare('SELECT * FROM member_cards WHERE id = ?').get(body.member_card_id);
+    const card = refreshFrozenCard(db.prepare('SELECT * FROM member_cards WHERE id = ?').get(body.member_card_id));
     if (!card || Number(card.member_id) !== Number(member.id)) throw httpError(400, '请选择正确的会员卡');
     if (['void', 'refunded', 'frozen'].includes(card.status)) throw httpError(400, '该卡已作废、退款或冻结，不可续费');
     const cp = db.prepare('SELECT * FROM card_products WHERE id = ?').get(body.card_product_id);
@@ -178,7 +193,16 @@ function create({ body, req }) {
     benefitUses = cp.type === 'count' ? Number(cp.total_uses) || 0 : 0;
     benefitAmount = cp.type === 'stored' ? money(cp.stored_value) : 0;
     memberCardId = card.id;
-    if (cp.type === 'count') db.prepare('UPDATE member_cards SET remaining_uses = remaining_uses + ?, updated_at = ? WHERE id = ?').run(cp.total_uses || 0, ts, card.id);
+    if (cp.type === 'count') {
+      let endAt = card.end_at;
+      if (cp.duration_days > 0) {
+        const base = card.end_at && card.end_at >= today() ? card.end_at : today();
+        endAt = addDays(base, Number(cp.duration_days));
+        benefitDays = daysBetween(base, endAt);
+      }
+      db.prepare("UPDATE member_cards SET remaining_uses = remaining_uses + ?, end_at = ?, status = 'normal', updated_at = ? WHERE id = ?")
+        .run(cp.total_uses || 0, endAt, ts, card.id);
+    }
     else if (cp.type === 'stored') db.prepare('UPDATE member_cards SET balance = balance + ?, updated_at = ? WHERE id = ?').run(money(cp.stored_value), ts, card.id);
     else {
       const base = card.end_at && card.end_at >= today() ? card.end_at : today();
@@ -197,7 +221,7 @@ function create({ body, req }) {
     }
   } else {
     // recharge 储值充值
-    const card = db.prepare('SELECT * FROM member_cards WHERE id = ?').get(body.member_card_id);
+    const card = refreshFrozenCard(db.prepare('SELECT * FROM member_cards WHERE id = ?').get(body.member_card_id));
     if (!card || Number(card.member_id) !== Number(member.id)) throw httpError(400, '请选择正确的会员卡');
     if (card.card_type !== 'stored') throw httpError(400, '储值充值需选择储值卡');
     if (['void', 'refunded', 'frozen'].includes(card.status)) throw httpError(400, '该卡已作废、退款或冻结，不可充值');
@@ -215,7 +239,8 @@ function create({ body, req }) {
 
   // 校验支付
   const pays = Array.isArray(body.payments) ? body.payments : [];
-  if (!pays.length) throw httpError(400, '请录入支付方式');
+  if (payable > 0 && !pays.length) throw httpError(400, '请录入支付方式');
+  if (payable === 0 && pays.length) throw httpError(400, '零元订单不需要录入支付方式');
   let paySum = 0;
   for (const p of pays) {
     if (!PAY_METHODS.includes(p.pay_method)) throw httpError(400, '无效的支付方式');
@@ -227,9 +252,9 @@ function create({ body, req }) {
 
   // 创建订单
   const orderNo = nextOrderNo();
-  const r = db.prepare(`INSERT INTO orders(order_no, order_type, member_id, member_card_id, total_amount, discount_amount, payable_amount, paid_amount, status, shift_id, staff_id, benefit_uses, benefit_amount, benefit_days, request_id, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?, ?, ?, ?, ?, ?)`)
-    .run(orderNo, orderType, member.id, memberCardId, total, discount, payable, shift.id, staff.id, benefitUses, benefitAmount, benefitDays, requestId, ts);
+  const r = db.prepare(`INSERT INTO orders(order_no, order_type, member_id, member_card_id, total_amount, discount_amount, payable_amount, paid_amount, status, shift_id, staff_id, benefit_uses, benefit_amount, benefit_days, request_id, request_hash, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(orderNo, orderType, member.id, memberCardId, total, discount, payable, shift.id, staff.id, benefitUses, benefitAmount, benefitDays, requestId, fingerprint, ts);
   const orderId = Number(r.lastInsertRowid);
   if (orderType === 'open') db.prepare('UPDATE member_cards SET created_order_id = ? WHERE id = ?').run(orderId, memberCardId);
 
@@ -266,10 +291,14 @@ function refundApply({ params, body, req }) {
   if (!['open', 'renew', 'recharge'].includes(o.order_type)) return fail(400, '该订单不可退款');
   if (!['paid', 'partial_refund'].includes(o.status)) return fail(400, '该订单状态不可退款');
   const requestId = String(body.request_id || '').trim() || null;
+  const fingerprint = requestHash('refund', body);
   if (requestId && requestId.length > 100) return fail(400, '请求编号格式无效');
   if (requestId) {
     const existing = db.prepare("SELECT * FROM orders WHERE request_id = ? AND staff_id = ? AND order_type = 'refund'").get(requestId, req.user.id);
-    if (existing) return ok({ refund: decorateOrder(existing), repeated: true });
+    if (existing) {
+      if (existing.request_hash && existing.request_hash !== fingerprint) return fail(409, '请求编号已用于其他退款申请，请刷新后重试');
+      return ok({ refund: decorateOrder(existing), repeated: true });
+    }
   }
   // 待审批的退款也占用额度，避免同一订单重复提交全额退款。
   const max = money(Number(o.paid_amount) - alreadyRefunded(o.id) - pendingRefunded(o.id));
@@ -281,9 +310,9 @@ function refundApply({ params, body, req }) {
   if (!reason) return fail(400, '请填写退款原因');
   if (reason.length > 500) return fail(400, '退款原因不能超过 500 个字');
   const ts = now();
-  const r = db.prepare(`INSERT INTO orders(order_no, order_type, member_id, member_card_id, original_order_id, total_amount, payable_amount, paid_amount, status, staff_id, refund_reason, request_id, created_at)
-    VALUES (?, 'refund', ?, ?, ?, ?, ?, 0, 'pending', ?, ?, ?, ?)`)
-    .run(nextOrderNo(), o.member_id, o.member_card_id, o.id, amount, amount, req.user.id, reason, requestId, ts);
+  const r = db.prepare(`INSERT INTO orders(order_no, order_type, member_id, member_card_id, original_order_id, total_amount, payable_amount, paid_amount, status, staff_id, refund_reason, request_id, request_hash, created_at)
+    VALUES (?, 'refund', ?, ?, ?, ?, ?, 0, 'pending', ?, ?, ?, ?, ?)`)
+    .run(nextOrderNo(), o.member_id, o.member_card_id, o.id, amount, amount, req.user.id, reason, requestId, fingerprint, ts);
   audit.record({ req, action: '退款申请', target_type: 'order', target_id: Number(r.lastInsertRowid), after: { original_order_id: o.id, amount, reason } });
   return ok({ refund: decorateOrder(orderById(Number(r.lastInsertRowid))) }, 201);
 }
@@ -305,6 +334,7 @@ function refundApprove({ params, body, req }) {
   const r = orderById(params.id);
   if (!r || r.order_type !== 'refund') throw httpError(404, '退款单不存在');
   if (r.status !== 'pending') throw httpError(400, '该退款单已处理');
+  if (Number(r.staff_id) === Number(req.user.id) && req.user.role !== 'admin') throw httpError(403, '退款申请人与审批人不能是同一账号');
   const o = orderById(r.original_order_id);
   if (!o) throw httpError(404, '原订单不存在');
   const method = body.refund_method === 'cash' ? 'cash' : 'original';
@@ -314,7 +344,8 @@ function refundApprove({ params, body, req }) {
   if (amount > remainingRefundable + 0.001) throw httpError(400, `退款金额超过当前可退金额 ${remainingRefundable}`);
 
   // 必须先确认对应权益能够完整收回，再生成退款支付流水。
-  const card = o.member_card_id ? db.prepare('SELECT * FROM member_cards WHERE id = ?').get(o.member_card_id) : null;
+  const card = o.member_card_id ? refreshFrozenCard(db.prepare('SELECT * FROM member_cards WHERE id = ?').get(o.member_card_id)) : null;
+  if (card && Number(card.member_id) !== Number(o.member_id)) throw httpError(400, '该会员卡已转给其他会员，不能直接退款；请先处理转卡关系');
   const delta = entitlementDelta(o, amount);
   const full = Math.abs(Number(o.paid_amount) - delta.totalAfter) <= 0.01;
   if (full && o.order_type === 'open') {
@@ -369,8 +400,10 @@ function refundApprove({ params, body, req }) {
     }
   }
 
-  // 退款按审批通过时间入账，并归入审批人的当前班次，不能回写已经关闭的原销售班次。
-  const activeRefundShift = db.prepare("SELECT id FROM shifts WHERE staff_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1").get(req.user.id);
+  // 退款按审批通过时间进入日报和报表。仅当审批人原本已有活动班次时才归班；
+  // 财务不参与班次，且绝不回写已经关闭的原销售班次。
+  const activeRefundShift = req.user.role === 'finance' ? null
+    : db.prepare("SELECT id FROM shifts WHERE staff_id = ? AND status = 'active'").get(req.user.id);
   db.prepare("UPDATE orders SET status = 'paid', approved_by = ?, approved_at = ?, shift_id = ? WHERE id = ?")
     .run(req.user.id, ts, activeRefundShift ? activeRefundShift.id : null, r.id);
   const newRefunded = money(alreadyRefunded(o.id));

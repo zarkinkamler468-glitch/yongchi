@@ -1,7 +1,7 @@
 'use strict';
 
 const { db } = require('../db');
-const { today, now, addDays, money } = require('../util');
+const { today, now, addDays, money, isDateString } = require('../util');
 const { ok, fail } = require('../http');
 const audit = require('./audit');
 
@@ -31,8 +31,9 @@ function get({ params }) {
 // POST /api/closings  （财务/老板执行日结）
 function create({ body, req }) {
   const date = body.business_date || today();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return fail(400, '营业日期格式无效');
+  if (!isDateString(date)) return fail(400, '营业日期格式无效');
   if (date > today()) return fail(400, '不能对未来日期执行日结');
+  if (date === today() && db.prepare("SELECT id FROM shifts WHERE status='active' LIMIT 1").get()) return fail(400, '仍有进行中的班次，请全部交班后再执行今日日结');
   const existing = db.prepare('SELECT * FROM daily_closings WHERE business_date = ?').get(date);
   const summary = computeDaily(date);
   if (existing) {
