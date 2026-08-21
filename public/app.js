@@ -60,6 +60,7 @@ const TITLES = {
 };
 
 const state = { settings: {}, user: null };
+let refundBadgeTimer = null;
 
 /* ============================= 提示 / 模态框 ============================= */
 let toastTimer;
@@ -155,8 +156,26 @@ function render(v) {
 }
 
 /* ============================= 登录 / 导航 ============================= */
-function showApp() { $('#loginScreen').hidden = true; $('#app').hidden = false; applyBrand(); applyNav(); switchView(); checkShiftReminder(); }
+function showApp() { $('#loginScreen').hidden = true; $('#app').hidden = false; applyBrand(); applyNav(); switchView(); checkShiftReminder(); startRefundBadgePolling(); }
 function showLogin() { $('#app').hidden = true; $('#loginScreen').hidden = false; $('#loginStoreName').textContent = '请登录后开始使用'; }
+function stopRefundBadgePolling() { if (refundBadgeTimer) { clearInterval(refundBadgeTimer); refundBadgeTimer = null; } }
+async function refreshRefundBadge() {
+  const badge = $('#refundPendingBadge');
+  if (!badge) return;
+  const canApprove = ['boss', 'finance', 'admin'].includes(state.user?.role);
+  if (!canApprove) { badge.hidden = true; return; }
+  try {
+    const d = await api('/api/refunds?status=pending');
+    const count = Array.isArray(d.list) ? d.list.length : 0;
+    badge.textContent = count > 99 ? '99+' : String(count);
+    badge.hidden = count === 0;
+  } catch (_) { /* 网络短暂失败时保留页面，不打扰当前操作 */ }
+}
+function startRefundBadgePolling() {
+  stopRefundBadgePolling();
+  refreshRefundBadge();
+  refundBadgeTimer = setInterval(refreshRefundBadge, 30000);
+}
 function brandLogoHtml() {
   const s = state.settings;
   if (s.brand_logo_img) return `<img src="${esc(s.brand_logo_img)}" alt="">`;
@@ -831,6 +850,7 @@ async function refreshRefunds() {
   const q = new URLSearchParams();
   if (state.refundTab) q.set('status', state.refundTab);
   const d = await api('/api/refunds?' + q.toString());
+  refreshRefundBadge();
   $('#refundsBody').innerHTML = d.list.map((r) => `<tr>
     <td class="num">${esc(r.order_no)}</td><td class="num">${esc(r.original_order_id)}</td>
     <td>${esc(r.member_name)}</td><td class="num"><b>${fmtMoney(r.total_amount)}</b></td>
