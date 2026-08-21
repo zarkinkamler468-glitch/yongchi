@@ -34,7 +34,9 @@ function listProducts() {
 function createProduct({ body }) {
   const name = (body.name || '').trim();
   if (!name) return fail(400, '卡项名称不能为空');
+  if (name.length > 100) return fail(400, '卡项名称不能超过 100 个字');
   if (!CARD_TYPES.includes(body.type)) return fail(400, '无效的卡种类型');
+  const validation = validateProduct(body); if (validation) return validation;
   const ts = now();
   const r = db.prepare(`INSERT INTO card_products(name, type, price, duration_days, total_uses, stored_value, entry_fee, freeze_allowed, transfer_allowed, extension_allowed, enabled, note, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -50,13 +52,33 @@ function updateProduct({ params, body }) {
   if (!p) return fail(404, '卡项不存在');
   const name = (body.name || '').trim();
   if (!name) return fail(400, '卡项名称不能为空');
+  if (name.length > 100) return fail(400, '卡项名称不能超过 100 个字');
   if (!CARD_TYPES.includes(body.type)) return fail(400, '无效的卡种类型');
+  if (body.type !== p.type && db.prepare('SELECT id FROM member_cards WHERE card_product_id = ? LIMIT 1').get(p.id)) return fail(400, '该卡项已经发卡，不能修改卡种类型');
+  const validation = validateProduct(body); if (validation) return validation;
   db.prepare(`UPDATE card_products SET name = ?, type = ?, price = ?, duration_days = ?, total_uses = ?, stored_value = ?, entry_fee = ?, freeze_allowed = ?, transfer_allowed = ?, extension_allowed = ?, enabled = ?, note = ?, updated_at = ? WHERE id = ?`)
     .run(name, body.type, money(body.price), Number(body.duration_days) || 0, Number(body.total_uses) || 0,
       money(body.stored_value), money(body.entry_fee),
       body.freeze_allowed ? 1 : 0, body.transfer_allowed ? 1 : 0, body.extension_allowed ? 1 : 0,
       body.enabled === undefined ? 1 : (body.enabled ? 1 : 0), (body.note || '').trim() || null, now(), p.id);
   return ok({ product: db.prepare('SELECT * FROM card_products WHERE id = ?').get(p.id) });
+}
+
+function validateProduct(body) {
+  const price = Number(body.price);
+  const duration = Number(body.duration_days || 0);
+  const uses = Number(body.total_uses || 0);
+  const stored = Number(body.stored_value || 0);
+  const fee = Number(body.entry_fee || 0);
+  if (!Number.isFinite(price) || price < 0) return fail(400, '卡项价格不能为负数');
+  if (!Number.isFinite(duration) || duration < 0 || !Number.isInteger(duration)) return fail(400, '有效天数必须是非负整数');
+  if (!Number.isFinite(uses) || uses < 0 || !Number.isInteger(uses)) return fail(400, '次数必须是非负整数');
+  if (!Number.isFinite(stored) || stored < 0) return fail(400, '储值金额不能为负数');
+  if (!Number.isFinite(fee) || fee < 0) return fail(400, '单次入场扣费不能为负数');
+  if (body.type === 'count' && uses <= 0) return fail(400, '次卡总次数必须大于 0');
+  if (body.type === 'stored' && stored <= 0) return fail(400, '储值卡储值金额必须大于 0');
+  if (['month', 'year'].includes(body.type) && duration <= 0) return fail(400, '期限卡有效天数必须大于 0');
+  return null;
 }
 
 function disableProduct({ params }) {

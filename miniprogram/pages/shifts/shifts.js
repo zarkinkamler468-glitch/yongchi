@@ -5,7 +5,7 @@ Page({
   data: {
     current: null, list: [],
     showClose: false, closeId: null, summary: null,
-    actualCash: '', note: '', diff: '—'
+    actualCash: '', note: '', diff: '—', submitting: false
   },
   onShow() { this.load(); },
   load() {
@@ -22,7 +22,16 @@ Page({
       });
     }).catch((e) => toast(e.message));
   },
-  start() { request('/api/shifts/start', { data: {} }).then(() => { toast('已开班', 'success'); this.load(); }).catch((e) => toast(e.message)); },
+  start() {
+    if (this.data.submitting) return;
+    wx.showModal({ title: '开始班次', editable: true, placeholderText: '开班备用金，默认 0 元', success: (res) => {
+      if (!res.confirm) return;
+      const openingCash = res.content === '' ? 0 : Number(res.content);
+      if (!Number.isFinite(openingCash) || openingCash < 0) { toast('备用金必须是非负数'); return; }
+      this.setData({ submitting: true });
+      request('/api/shifts/start', { data: { opening_cash: openingCash } }).then(() => { this.setData({ submitting: false }); toast('已开班', 'success'); this.load(); }).catch((e) => { this.setData({ submitting: false }); toast(e.message); });
+    } });
+  },
   openClose(e) {
     const id = e.currentTarget.dataset.id;
     request('/api/shifts/' + id).then((d) => {
@@ -45,8 +54,10 @@ Page({
     this.setData({ diff: (diff >= 0 ? '+' : '') + fmtMoney(diff).replace('¥', '') });
   },
   confirmClose() {
+    if (this.data.submitting) return;
+    this.setData({ submitting: true });
     request('/api/shifts/' + this.data.closeId + '/close', { data: { actual_cash: this.data.actualCash, note: this.data.note } })
-      .then(() => { toast('已交班', 'success'); this.setData({ showClose: false }); this.load(); })
-      .catch((e) => toast(e.message));
+      .then(() => { toast('已交班', 'success'); this.setData({ submitting: false, showClose: false }); this.load(); })
+      .catch((e) => { this.setData({ submitting: false }); toast(e.message); });
   }
 });

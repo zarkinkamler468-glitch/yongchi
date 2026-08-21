@@ -8,7 +8,7 @@ Page({
     request('/api/dashboard').then((d) => {
       const max = Math.max(1, ...d.recent.map((r) => r.income));
       const user = wx.getStorageSync('user') || {};
-      const canShift = ['boss', 'frontdesk'].includes(user.role);
+      const canShift = ['boss', 'frontdesk', 'admin'].includes(user.role);
       this.setData({
         canShift, showShiftReminder: canShift && !d.current_shift,
         stats: {
@@ -29,12 +29,17 @@ Page({
   },
   startShift() {
     if (this.data.startingShift) return;
-    this.setData({ startingShift: true });
-    request('/api/shifts/start', { data: {} }).then(() => {
-      toast('班次已开始', 'success');
-      this.setData({ showShiftReminder: false, startingShift: false });
-      this.load();
-    }).catch((e) => { this.setData({ startingShift: false }); toast(e.message); });
+    wx.showModal({ title: '开始班次', editable: true, placeholderText: '开班备用金，默认 0 元', success: (res) => {
+      if (!res.confirm) return;
+      const openingCash = res.content === '' ? 0 : Number(res.content);
+      if (!Number.isFinite(openingCash) || openingCash < 0) { toast('备用金必须是非负数'); return; }
+      this.setData({ startingShift: true });
+      request('/api/shifts/start', { data: { opening_cash: openingCash } }).then(() => {
+        toast('班次已开始', 'success');
+        this.setData({ showShiftReminder: false, startingShift: false });
+        this.load();
+      }).catch((e) => { this.setData({ startingShift: false }); toast(e.message); });
+    } });
   },
   dismissShiftReminder() { this.setData({ showShiftReminder: false }); },
   goCashier() { wx.switchTab({ url: '/pages/cashier/cashier' }); },

@@ -144,6 +144,7 @@ node server.js
 | `NODE_ENV` | `production` |
 | `HOST` | `0.0.0.0` |
 | `PORT` | `3000` |
+| `TZ` | `Asia/Shanghai` |
 | `PMS_INITIAL_ADMIN_PASSWORD` | 你设置的超管密码 |
 | `PMS_INITIAL_BOSS_PASSWORD` | 你设置的老板密码 |
 | `PMS_INITIAL_FRONTDESK_PASSWORD` | 你设置的前台密码 |
@@ -154,6 +155,8 @@ node server.js
 ```text
 HOST=0.0.0.0
 ```
+
+同时建议明确设置 `TZ=Asia/Shanghai`，确保日结、交班和报表使用中国标准时间；如果容器默认使用 UTC，跨日统计会偏移 8 小时。
 
 不要填 `127.0.0.1`，否则 Node.js 只监听容器内部回环地址，外部映射可能无法访问。
 

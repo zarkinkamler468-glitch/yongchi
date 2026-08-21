@@ -17,6 +17,8 @@ const staffApi = require('../src/api/staff');
 const membersApi = require('../src/api/members');
 const entriesApi = require('../src/api/entries');
 const settingsApi = require('../src/api/settings');
+const shiftsApi = require('../src/api/shifts');
+const cardsApi = require('../src/api/cards');
 const { today, addDays } = require('../src/util');
 
 const staff = Object.fromEntries(db.prepare('SELECT * FROM staff').all().map((s) => [s.role, s]));
@@ -195,4 +197,73 @@ test('冻结会员卡不能续费或储值充值', () => {
   const renew = orders.create({ body: { order_type: 'renew', member_id: order.member_id, member_card_id: order.member_card_id, card_product_id: productStored.id, payments: [{ pay_method: 'cash', amount: productStored.price }] }, req: req('frontdesk') });
   assert.equal(renew.status, 400);
   assert.match(renew.body.error, /冻结/);
+});
+
+test('老板不能通过普通设置接口修改短信密钥', () => {
+  const result = settingsApi.update({ body: { store_name: '正常名称', sms_secret_key: 'not-allowed' }, req: req('boss') });
+  assert.equal(result.status, 403);
+  assert.notEqual(db.prepare("SELECT value FROM settings WHERE key='sms_secret_key'").get().value, 'not-allowed');
+});
+
+test('储值卡不能使用自身新增余额支付充值订单', () => {
+  const opened = openCard({ name: '禁止自充自付', phone: '13900000012', type: 'stored' });
+  db.prepare('UPDATE member_cards SET balance = 0 WHERE id = ?').run(opened.member_card_id);
+  const result = orders.create({ body: { order_type: 'recharge', member_id: opened.member_id, member_card_id: opened.member_card_id, amount: 100, payments: [{ pay_method: 'stored', amount: 100 }] }, req: req('frontdesk') });
+  assert.equal(result.status, 400);
+  assert.match(result.body.error, /余额不足/);
+  assert.equal(db.prepare('SELECT balance FROM member_cards WHERE id = ?').get(opened.member_card_id).balance, 0);
+});
+
+test('相同请求编号重复收银只生成一张订单', () => {
+  const p = product('count');
+  const body = { order_type: 'open', name: '幂等收银', phone: '13900000013', card_product_id: p.id, request_id: 'same-order-request', payments: [{ pay_method: 'cash', amount: p.price }] };
+  const first = orders.create({ body, req: req('frontdesk') });
+  const second = orders.create({ body, req: req('frontdesk') });
+  assert.equal(first.status, 201);
+  assert.equal(second.status, 200);
+  assert.equal(second.body.repeated, true);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM orders WHERE request_id='same-order-request'").get().n, 1);
+});
+
+test('相同请求编号重复核销只扣减一次', () => {
+  const opened = openCard({ name: '幂等核销', phone: '13900000014', type: 'count' });
+  const memberNo = db.prepare('SELECT member_no FROM members WHERE id = ?').get(opened.member_id).member_no;
+  const body = { keyword: memberNo, card_id: opened.member_card_id, people: 1, confirmed: true, request_id: 'same-entry-request' };
+  const before = db.prepare('SELECT remaining_uses FROM member_cards WHERE id = ?').get(opened.member_card_id).remaining_uses;
+  assert.equal(entriesApi.checkin({ body, req: req('frontdesk') }).status, 200);
+  const repeated = entriesApi.checkin({ body, req: req('frontdesk') });
+  assert.equal(repeated.status, 200);
+  assert.equal(repeated.body.repeated, true);
+  assert.equal(db.prepare('SELECT remaining_uses FROM member_cards WHERE id = ?').get(opened.member_card_id).remaining_uses, before - 1);
+});
+
+test('开班备用金计入应交现金', () => {
+  const fake = { ...staff.frontdesk, id: staff.frontdesk.id + 2000 };
+  const started = shiftsApi.start({ req: { user: fake }, body: { opening_cash: 200 } });
+  assert.equal(started.status, 201);
+  assert.equal(shiftsApi.shiftSummary(started.body.shift.id).cash_should, 200);
+});
+
+test('前台不能查看其他员工班次详情', () => {
+  const financeShift = shiftsApi.start({ req: req('finance'), body: { opening_cash: 0 } }).body.shift;
+  const result = shiftsApi.get({ params: { id: financeShift.id }, req: req('frontdesk') });
+  assert.equal(result.status, 403);
+});
+
+test('已发卡的卡项不能修改卡种类型', () => {
+  const opened = openCard({ name: '卡项类型锁定', phone: '13900000015', type: 'count' });
+  const p = db.prepare('SELECT cp.* FROM card_products cp JOIN member_cards mc ON mc.card_product_id=cp.id WHERE mc.id=?').get(opened.member_card_id);
+  const result = cardsApi.updateProduct({ params: { id: p.id }, body: { ...p, type: 'stored', stored_value: 100 } });
+  assert.equal(result.status, 400);
+  assert.match(result.body.error, /不能修改卡种类型/);
+});
+
+test('储值余额内部消费不会重复计入实际收入', () => {
+  const stored = openCard({ name: '内部余额支付', phone: '13900000016', type: 'stored' });
+  const before = reports.dashboard({ req: req('boss') }).body.today_income;
+  const p = product('count');
+  const sale = orders.create({ body: { order_type: 'open', member_id: stored.member_id, card_product_id: p.id, payments: [{ pay_method: 'stored', amount: p.price }] }, req: req('frontdesk') });
+  assert.equal(sale.status, 201, sale.body.error);
+  const after = reports.dashboard({ req: req('boss') }).body.today_income;
+  assert.equal(after, before);
 });

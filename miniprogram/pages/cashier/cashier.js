@@ -14,7 +14,7 @@ Page({
     payMethod: 'cash',
     payable: '¥0',
     payAmount: '',
-    payManual: false
+    payManual: false, submitting: false, checkinSubmitting: false, requestId: '', checkinRequestId: ''
   },
   onShow() { this.loadBase(); },
   loadBase() {
@@ -39,10 +39,12 @@ Page({
   },
   confirmCheckin() {
     const p = this.data.checkinPreview;
-    if (!p) return;
-    request('/api/entries/checkin', { data: { keyword: this.data.checkinKeyword.trim(), card_id: p.card && p.card.id, people: Number(this.data.checkinPeople) || 1, gate_no: '小程序收银', confirmed: true } })
-      .then((d) => this.setData({ checkinPreview: null, checkinResult: { ok: true, pending: false, name: d.member.name, phone: d.member.phone, card: d.card.card_name, asset: d.card.card_type === 'count' ? `核销成功，剩余 ${d.card.remaining_uses} 次` : d.card.card_type === 'stored' ? `核销成功，余额 ${d.card.balance} 元` : `核销成功，有效期至 ${d.card.end_at || '—'}` } }))
-      .catch((e) => this.setData({ checkinResult: { ok: false, error: e.message } }));
+    if (!p || this.data.checkinSubmitting) return;
+    const rid = this.data.checkinRequestId || `checkin-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    this.setData({ checkinSubmitting: true, checkinRequestId: rid });
+    request('/api/entries/checkin', { data: { keyword: this.data.checkinKeyword.trim(), card_id: p.card && p.card.id, people: Number(this.data.checkinPeople) || 1, gate_no: '小程序收银', confirmed: true, request_id: rid } })
+      .then((d) => this.setData({ checkinSubmitting: false, checkinRequestId: '', checkinPreview: null, checkinResult: { ok: true, pending: false, name: d.member.name, phone: d.member.phone, card: d.card.card_name, asset: d.card.card_type === 'count' ? `核销成功，剩余 ${d.card.remaining_uses} 次` : d.card.card_type === 'stored' ? `核销成功，余额 ${d.card.balance} 元` : `核销成功，有效期至 ${d.card.end_at || '—'}` } }))
+      .catch((e) => this.setData({ checkinSubmitting: false, checkinResult: { ok: false, error: e.message } }));
   },
   searchMember(e) {
     const q = (e.detail.value || '').trim();
@@ -103,6 +105,7 @@ Page({
     this.setData(patch);
   },
   submit() {
+    if (this.data.submitting) return;
     const { tab, selectedMember, newName, newPhone, newGender, products, productIndex, cards, cardIndex, amount, discount, payMethod, payAmount } = this.data;
     const memberId = selectedMember && selectedMember.id;
     const selectedCard = cards[cardIndex];
@@ -120,13 +123,16 @@ Page({
       discount_amount: Number(discount) || 0,
       payments: [{ pay_method: payMethod, amount: payable }]
     };
+    const rid = this.data.requestId || `cashier-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    body.request_id = rid;
     if (tab === 'recharge') body.amount = Number(amount);
+    this.setData({ submitting: true, requestId: rid });
     wx.showLoading({ title: '收款中', mask: true });
     request('/api/orders', { data: body }).then((d) => {
       wx.hideLoading();
       wx.showModal({ title: '收款成功', content: fmtMoney(d.amount), showCancel: false, confirmText: '继续' });
-      this.setData({ memberMode: tab === 'open' ? 'new' : 'existing', memberIndex: 0, selectedMember: null, memberQuery: '', memberResults: [], newName: '', newPhone: '', newGender: 'unknown', discount: '0', payManual: false, amount: '100', cards: [], cardOptions: [], cardIndex: 0 });
+      this.setData({ submitting: false, requestId: '', memberMode: tab === 'open' ? 'new' : 'existing', memberIndex: 0, selectedMember: null, memberQuery: '', memberResults: [], newName: '', newPhone: '', newGender: 'unknown', discount: '0', payManual: false, amount: '100', cards: [], cardOptions: [], cardIndex: 0 });
       this.loadBase();
-    }).catch((e) => { wx.hideLoading(); toast(e.message); });
+    }).catch((e) => { wx.hideLoading(); this.setData({ submitting: false }); toast(e.message); });
   }
 });

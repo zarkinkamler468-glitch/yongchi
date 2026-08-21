@@ -2,7 +2,7 @@ const { request, toast } = require('../../utils/request');
 const { fmtMoney } = require('../../utils/util');
 
 Page({
-  data: { keyword: '', gate_no: '前台', people: 1, result: null, preview: null },
+  data: { keyword: '', gate_no: '前台', people: 1, result: null, preview: null, submitting: false, requestId: '' },
   onInput(e) { this.setData({ [e.currentTarget.dataset.key]: e.detail.value }); },
   submit() {
     const { keyword, gate_no, people } = this.data;
@@ -14,7 +14,10 @@ Page({
     }).catch((e) => this.setData({ result: { ok: false, error: e.message } }));
   },
   confirm() {
+    if (this.data.submitting || !this.data.preview) return;
     const { keyword, gate_no, people } = this.data;
-    request('/api/entries/checkin', { data: { keyword, card_id: this.data.preview && this.data.preview.card_id, gate_no, people: Number(people) || 1, confirmed: true } }).then(() => { toast('核销成功', 'success'); this.setData({ preview: null, result: { ok: true, error: '核销成功，权益已扣减' } }); }).catch((e) => this.setData({ result: { ok: false, error: e.message } }));
+    const rid = this.data.requestId || `checkin-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    this.setData({ submitting: true, requestId: rid });
+    request('/api/entries/checkin', { data: { keyword, card_id: this.data.preview.card_id, gate_no, people: Number(people) || 1, confirmed: true, request_id: rid } }).then(() => { toast('核销成功', 'success'); this.setData({ submitting: false, requestId: '', preview: null, result: { ok: true, error: '核销成功，权益已扣减' } }); }).catch((e) => this.setData({ submitting: false, result: { ok: false, error: e.message } }));
   }
 });

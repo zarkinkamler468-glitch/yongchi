@@ -13,6 +13,7 @@ const addDays = (s, n) => { const d = new Date(s + 'T00:00:00'); d.setDate(d.get
 const fmtMoney = (n) => '¥' + Number(n || 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
 const fmtNum = (n) => Number(n || 0).toLocaleString('zh-CN');
 const money2 = (n) => Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100;
+const requestId = (prefix) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 
 function debounce(fn, ms = 200) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
@@ -224,19 +225,17 @@ function loadRemembered() {
   const v = localStorage.getItem('pms_remember');
   if (!v) return;
   try {
-    const raw = atob(v);
-    const i = raw.indexOf(':');
-    if (i > 0) {
-      $('#loginUsername').value = raw.slice(0, i);
-      $('#loginPassword').value = raw.slice(i + 1);
-      $('#rememberPwd').checked = true;
-    }
+    // 新版本只记账号；兼容读取旧数据时主动丢弃其中的密码。
+    const raw = decodeURIComponent(escape(atob(v)));
+    $('#loginUsername').value = raw.includes(':') ? raw.slice(0, raw.indexOf(':')) : raw;
+    $('#rememberPwd').checked = true;
+    if (raw.includes(':')) localStorage.setItem('pms_remember', btoa(unescape(encodeURIComponent($('#loginUsername').value))));
   } catch (e) { localStorage.removeItem('pms_remember'); }
 }
 function saveRemembered() {
   if ($('#rememberPwd').checked) {
-    const u = $('#loginUsername').value, p = $('#loginPassword').value;
-    localStorage.setItem('pms_remember', btoa(unescape(encodeURIComponent(u + ':' + p))));
+    const u = $('#loginUsername').value;
+    localStorage.setItem('pms_remember', btoa(unescape(encodeURIComponent(u))));
   } else {
     localStorage.removeItem('pms_remember');
   }
@@ -269,9 +268,9 @@ async function loadSettings() {
   try { const d = await api('/api/settings'); state.settings = d.settings; } catch (e) { /* ignore */ }
 }
 
-/* 登录后开班提醒（前台/老板；财务不参与班次） */
+/* 登录后开班提醒 */
 async function checkShiftReminder() {
-  if (!['boss', 'frontdesk'].includes(state.user?.role)) return;
+  if (!['boss', 'frontdesk', 'admin'].includes(state.user?.role)) return;
   try {
     const d = await api('/api/shifts/current');
     if (!d.shift) {
@@ -287,9 +286,7 @@ async function checkShiftReminder() {
     }
   } catch (e) { /* ignore */ }
 }
-async function startShiftFromReminder() {
-  try { await api('/api/shifts/start', { body: {} }); toast('班次已开始'); closeModal(); } catch (e) { toast(e.message, 'error'); }
-}
+function startShiftFromReminder() { startShift(); }
 
 /* ============================= 首页总览 ============================= */
 async function renderDashboard() {
@@ -303,7 +300,7 @@ async function renderDashboard() {
   try {
     const d = await api('/api/dashboard');
     const labels = d.recent.map((r) => r.date.slice(5));
-    const canShift = ['boss', 'frontdesk'].includes(state.user?.role);
+    const canShift = ['boss', 'frontdesk', 'admin'].includes(state.user?.role);
     $('#dashShiftBanner').innerHTML = (!d.current_shift && canShift)
       ? `<div class="card mb-16" style="background:linear-gradient(135deg,rgba(245,158,11,.9),rgba(249,115,22,.85));color:#fff;border:none">
           <div class="flex-between"><div><b>今日班次尚未开始</b><div style="font-size:13px;opacity:.9">开始班次后收银与核销才会归入本班并自动汇总</div></div>
@@ -403,7 +400,7 @@ async function openMember(id) {
   try {
     const d = await api('/api/members/' + id);
     const m = d.member;
-    const isBoss = state.user?.role === 'boss';
+    const isBoss = ['boss', 'admin'].includes(state.user?.role);
     openModal(`
       <div class="modal-head"><h3>会员详情 · ${esc(m.name)}</h3><button class="modal-close" data-action="closeModal">×</button></div>
       <div class="modal-body">
@@ -507,7 +504,7 @@ async function toggleProduct(el) { try { await api('/api/card-products/' + el.da
 /* ============================= 会员卡账户 ============================= */
 async function renderMemberCards() {
   const d = await api('/api/member-cards');
-  const isBoss = state.user?.role === 'boss';
+  const isBoss = ['boss', 'admin'].includes(state.user?.role);
   $('#view-member-cards').innerHTML = `
     <div class="card"><div class="table-wrap"><table>
       <thead><tr><th>卡号</th><th>会员</th><th>卡项</th><th>类型</th><th>剩余/余额</th><th>有效期</th><th>状态</th>${isBoss ? '<th>操作</th>' : ''}</tr></thead>
@@ -570,12 +567,19 @@ async function doCheckin() {
         <div class="card stat"><span class="stat-label">本次扣次数</span><span class="stat-value num">${c.preview_deducted_uses || 0}</span></div>
         <div class="card stat"><span class="stat-label">本次扣金额</span><span class="stat-value num">${fmtMoney(c.preview_deducted_amount)}</span></div>
         <div class="card stat"><span class="stat-label">有效期</span><span class="stat-value num" style="font-size:18px">${c.end_at || '—'}</span></div>
-      </div><div class="mt-16"><button class="btn btn-primary" data-action="confirmCheckin" data-keyword="${esc(body.keyword)}">确认核销并扣减</button></div>`;
+      </div><div class="mt-16"><button class="btn btn-primary" data-action="confirmCheckin" data-keyword="${esc(body.keyword)}" data-card="${c.id}">确认核销并扣减</button></div>`;
+    state.checkinRequestId = requestId('checkin');
     toast('请核对会员信息');
   } catch (e) { $('#ckResult').innerHTML = `<span class="badge badge-red">${esc(e.message)}</span>`; }
 }
 async function confirmCheckin(el) {
-  try { const d = await api('/api/entries/checkin', { body: { keyword: el.dataset.keyword, gate_no: $('#ckGate').value, people: Number($('#ckPeople').value) || 1, confirmed: true } }); $('#ckResult').innerHTML = '<span class="badge badge-green">核销成功，权益已扣减</span>'; toast('核销成功'); } catch (e) { toast(e.message, 'error'); }
+  if (state.checkinSubmitting) return;
+  state.checkinSubmitting = true; el.disabled = true;
+  try {
+    await api('/api/entries/checkin', { body: { keyword: el.dataset.keyword, card_id: Number(el.dataset.card), gate_no: $('#ckGate').value, people: Number($('#ckPeople').value) || 1, confirmed: true, request_id: state.checkinRequestId || requestId('checkin') } });
+    state.checkinRequestId = null; $('#ckResult').innerHTML = '<span class="badge badge-green">核销成功，权益已扣减</span>'; toast('核销成功');
+  } catch (e) { toast(e.message, 'error'); el.disabled = false; }
+  finally { state.checkinSubmitting = false; }
 }
 
 /* ============================= 收银台 ============================= */
@@ -724,6 +728,7 @@ function updateCashierTotal() {
   if (inp && !state.payManual) inp.value = payable;
 }
 async function submitCashier() {
+  if (state.cashierSubmitting) return;
   const tab = state.cashierTab;
   const memberId = state.cashierMember?.id || '';
   const payable = cashierToPay();
@@ -739,12 +744,16 @@ async function submitCashier() {
     discount_amount: Number($('#csDiscount')?.value) || 0,
     payments: [{ pay_method: state.payMethod || 'cash', amount: payable }]
   };
+  body.request_id = state.cashierRequestId || (state.cashierRequestId = requestId('cashier'));
   if (tab === 'recharge') body.amount = Number($('#csAmount')?.value);
   try {
+    state.cashierSubmitting = true;
     const d = await api('/api/orders', { body });
+    state.cashierRequestId = null;
     toast(`收款成功：${fmtMoney(d.amount)}`);
     renderCashierForm(tab);
   } catch (e) { toast(e.message, 'error'); }
+  finally { state.cashierSubmitting = false; }
 }
 
 function toggleCashierFullscreen() {
@@ -819,7 +828,10 @@ function refundApply(el) {
     <div class="modal-foot"><button class="btn" data-action="closeModal">取消</button><button class="btn btn-danger" data-action="confirmRefundApply" data-id="${el.dataset.id}">提交申请</button></div>`);
 }
 async function confirmRefundApply(el) {
-  try { await api(`/api/orders/${el.dataset.id}/refund`, { body: { amount: $('#rfAmount').value, reason: $('#rfReason').value } }); toast('退款申请已提交'); closeModal(); refreshOrders(); } catch (e) { toast(e.message, 'error'); }
+  if (state.refundSubmitting) return;
+  state.refundSubmitting = true; el.disabled = true;
+  state.refundRequestId ||= requestId('refund');
+  try { await api(`/api/orders/${el.dataset.id}/refund`, { body: { amount: $('#rfAmount').value, reason: $('#rfReason').value, request_id: state.refundRequestId } }); state.refundRequestId = null; toast('退款申请已提交'); closeModal(); refreshOrders(); } catch (e) { toast(e.message, 'error'); el.disabled = false; } finally { state.refundSubmitting = false; }
 }
 async function exportOrders() {
   const q = new URLSearchParams();
@@ -860,14 +872,14 @@ function approveRefund(el) {
     <div class="modal-body"><div class="field"><label>退款方式</label><select class="select" id="apMethod"><option value="original">原路退回</option><option value="cash">现金登记</option></select></div></div>
     <div class="modal-foot"><button class="btn" data-action="closeModal">取消</button><button class="btn btn-success" data-action="confirmApproveRefund" data-id="${el.dataset.id}">确认通过</button></div>`);
 }
-async function confirmApproveRefund(el) { try { await api(`/api/refunds/${el.dataset.id}/approve`, { body: { refund_method: $('#apMethod').value } }); toast('已通过'); closeModal(); refreshRefunds(); } catch (e) { toast(e.message, 'error'); } }
+async function confirmApproveRefund(el) { if (el.disabled) return; el.disabled = true; try { await api(`/api/refunds/${el.dataset.id}/approve`, { body: { refund_method: $('#apMethod').value } }); toast('已通过'); closeModal(); refreshRefunds(); } catch (e) { el.disabled = false; toast(e.message, 'error'); } }
 function rejectRefund(el) {
   openModal(`
     <div class="modal-head"><h3>驳回退款</h3><button class="modal-close" data-action="closeModal">×</button></div>
     <div class="modal-body"><div class="field"><label>驳回原因</label><input class="input" id="rjReason"></div></div>
     <div class="modal-foot"><button class="btn" data-action="closeModal">取消</button><button class="btn btn-danger" data-action="confirmRejectRefund" data-id="${el.dataset.id}">确认驳回</button></div>`);
 }
-async function confirmRejectRefund(el) { try { await api(`/api/refunds/${el.dataset.id}/reject`, { body: { reason: $('#rjReason').value } }); toast('已驳回'); closeModal(); refreshRefunds(); } catch (e) { toast(e.message, 'error'); } }
+async function confirmRejectRefund(el) { if (el.disabled) return; el.disabled = true; try { await api(`/api/refunds/${el.dataset.id}/reject`, { body: { reason: $('#rjReason').value } }); toast('已驳回'); closeModal(); refreshRefunds(); } catch (e) { el.disabled = false; toast(e.message, 'error'); } }
 
 /* ============================= 交班对账 ============================= */
 async function renderShifts() {
@@ -896,7 +908,12 @@ async function refreshShifts() {
     <td><button class="btn btn-sm btn-outline" data-action="openShift" data-id="${s.id}">详情</button></td>
   </tr>`).join('') || '<tr><td colspan="9" class="empty">暂无班次</td></tr>';
 }
-async function startShift() { try { await api('/api/shifts/start', { body: { opening_cash: 0 } }); toast('已开班'); refreshShifts(); } catch (e) { toast(e.message, 'error'); } }
+function startShift() {
+  openModal(`<div class="modal-head"><h3>开始班次</h3><button class="modal-close" data-action="closeModal">×</button></div>
+    <div class="modal-body"><div class="field"><label>开班备用金（元）</label><input class="input" type="number" min="0" step="0.01" id="shiftOpeningCash" value="0"><div class="hint mt-8">钱箱中上个班次留下的现金，不属于本班收入，但会计入本班应交现金。</div></div></div>
+    <div class="modal-foot"><button class="btn" data-action="closeModal">取消</button><button class="btn btn-primary" data-action="confirmStartShift">确认开班</button></div>`);
+}
+async function confirmStartShift(el) { if (el.disabled) return; el.disabled = true; try { await api('/api/shifts/start', { body: { opening_cash: $('#shiftOpeningCash').value } }); toast('已开班'); closeModal(); refreshShifts(); } catch (e) { el.disabled = false; toast(e.message, 'error'); } }
 async function openShiftClose(el) {
   try {
     const d = await api('/api/shifts/' + el.dataset.id);
@@ -935,7 +952,7 @@ function updateShiftDiff() {
     el.style.color = Math.abs(diff) < 0.005 ? '#16a34a' : '#dc2626';
   }
 }
-async function confirmShiftClose(el) { try { await api(`/api/shifts/${el.dataset.id}/close`, { body: { actual_cash: $('#scActual').value, note: $('#scNote').value } }); toast('已交班'); closeModal(); refreshShifts(); } catch (e) { toast(e.message, 'error'); } }
+async function confirmShiftClose(el) { if (el.disabled) return; el.disabled = true; try { await api(`/api/shifts/${el.dataset.id}/close`, { body: { actual_cash: $('#scActual').value, note: $('#scNote').value } }); toast('已交班'); closeModal(); refreshShifts(); } catch (e) { el.disabled = false; toast(e.message, 'error'); } }
 async function openShift(id) {
   const d = await api('/api/shifts/' + id);
   const sum = d.summary;
@@ -1302,6 +1319,7 @@ function handle(name, el) {
     case 'rejectRefund': rejectRefund(el); break;
     case 'confirmRejectRefund': confirmRejectRefund(el); break;
     case 'startShift': startShift(); break;
+    case 'confirmStartShift': confirmStartShift(el); break;
     case 'startShiftFromReminder': startShiftFromReminder(); break;
     case 'openShiftClose': openShiftClose(el); break;
     case 'confirmShiftClose': confirmShiftClose(el); break;

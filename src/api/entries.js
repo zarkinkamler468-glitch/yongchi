@@ -47,6 +47,7 @@ function preview({ query }) {
   const keyword = (query.get('keyword') || '').trim();
   const requestedCardId = Number(query.get('card_id')) || null;
   const people = Math.max(1, Math.floor(Number(query.get('people')) || 1));
+  if (people > 100) return fail(400, '同行人数不能超过 100 人');
   if (!keyword) return fail(400, '请输入卡号、手机号或会员编号');
   const found = memberByKeyword(keyword);
   if (!found || !found.member) return fail(404, '未找到对应会员或卡号');
@@ -107,12 +108,32 @@ function checkin({ body, req }) {
     found.card = specifiedCard;
   }
   const staff = req.user;
+  const requestId = String(body.request_id || '').trim() || null;
+  if (requestId && requestId.length > 100) return fail(400, '请求编号格式无效');
   const gateNo = (body.gate_no || '').trim() || '前台';
   const people = Math.max(1, Math.floor(Number(body.people) || 1));
+  if (people > 100) return fail(400, '同行人数不能超过 100 人');
   const ts = now();
 
   // 核销是“查询后确认”的扣减操作，必须在同一写事务内完成，避免并发请求超扣。
   db.exec('BEGIN IMMEDIATE');
+
+  if (requestId) {
+    const existing = db.prepare("SELECT * FROM entries WHERE request_id = ? AND staff_id = ? AND result = 'success'").get(requestId, staff.id);
+    if (existing) {
+      if (Number(existing.member_id) !== Number(member.id)) {
+        db.exec('ROLLBACK');
+        return fail(409, '请求编号已用于其他会员核销');
+      }
+      const existingCard = db.prepare('SELECT * FROM member_cards WHERE id = ?').get(existing.member_card_id);
+      db.exec('COMMIT');
+      return ok({
+        member: { id: member.id, name: member.name, member_no: member.member_no, phone: member.phone, status: member.status },
+        card: cardSummary(existingCard), charge_type: existing.charge_type,
+        deducted_uses: existing.deducted_uses, deducted_amount: existing.deducted_amount, repeated: true
+      });
+    }
+  }
 
   const recordFail = (reason) => {
     db.prepare(`INSERT INTO entries(member_id, member_card_id, charge_type, deducted_uses, deducted_amount, gate_no, result, fail_reason, entry_at, staff_id)
@@ -173,9 +194,9 @@ function checkin({ body, req }) {
     return recordFail('未知卡种');
   }
 
-  db.prepare(`INSERT INTO entries(member_id, member_card_id, charge_type, deducted_uses, deducted_amount, gate_no, result, fail_reason, entry_at, staff_id)
-    VALUES (?, ?, ?, ?, ?, ?, 'success', NULL, ?, ?)`)
-    .run(member.id, card.id, chargeType, deductedUses, deductedAmount, gateNo, ts, staff.id);
+  db.prepare(`INSERT INTO entries(member_id, member_card_id, charge_type, deducted_uses, deducted_amount, gate_no, result, fail_reason, entry_at, staff_id, request_id)
+    VALUES (?, ?, ?, ?, ?, ?, 'success', NULL, ?, ?, ?)`)
+    .run(member.id, card.id, chargeType, deductedUses, deductedAmount, gateNo, ts, staff.id, requestId);
 
   const refreshedCard = db.prepare('SELECT * FROM member_cards WHERE id = ?').get(card.id);
   audit.record({ req, action: '入场核销', target_type: 'member', target_id: member.id, after: { card_id: card.id, charge_type: chargeType, deducted_uses: deductedUses, deducted_amount: deductedAmount } });

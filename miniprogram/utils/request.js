@@ -9,6 +9,7 @@ function request(path, options = {}) {
       url: BASE_URL + path,
       method,
       data: options.data,
+      timeout: options.timeout || 15000,
       header: Object.assign(
         { 'Content-Type': 'application/json' },
         token ? { Authorization: 'Bearer ' + token } : {},

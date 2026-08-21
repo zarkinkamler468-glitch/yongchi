@@ -7,8 +7,10 @@ const audit = require('./audit');
 
 function computeDaily(date) {
   const next = addDays(date, 1);
-  const grossIncome = db.prepare("SELECT COALESCE(SUM(paid_amount),0) AS v FROM orders WHERE order_type IN ('open','renew','recharge') AND status IN ('paid','partial_refund','refunded') AND created_at >= ? AND created_at < ?").get(date, next).v;
-  const refund = db.prepare("SELECT COALESCE(SUM(total_amount),0) AS v FROM orders WHERE order_type = 'refund' AND status = 'paid' AND created_at >= ? AND created_at < ?").get(date, next).v;
+  const grossIncome = db.prepare(`SELECT COALESCE(SUM(p.amount),0) AS v FROM payments p JOIN orders o ON o.id=p.order_id
+    WHERE o.order_type IN ('open','renew','recharge') AND p.amount > 0 AND p.pay_method != 'stored' AND p.paid_at >= ? AND p.paid_at < ?`).get(date, next).v;
+  const refund = db.prepare(`SELECT COALESCE(SUM(-p.amount),0) AS v FROM payments p JOIN orders o ON o.id=p.order_id
+    WHERE o.order_type='refund' AND o.status='paid' AND p.amount < 0 AND p.pay_method != 'stored' AND p.paid_at >= ? AND p.paid_at < ?`).get(date, next).v;
   const entries = db.prepare("SELECT COUNT(*) AS v FROM entries WHERE result = 'success' AND entry_at >= ? AND entry_at < ?").get(date, next).v;
   const newMembers = db.prepare('SELECT COUNT(*) AS v FROM members WHERE created_at >= ? AND created_at < ?').get(date, next).v;
   return { total_income: money(Number(grossIncome) - Number(refund)), total_refund: money(refund), total_entries: entries, new_members: newMembers };

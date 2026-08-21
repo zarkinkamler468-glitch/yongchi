@@ -18,11 +18,14 @@ function shiftSummary(shiftId) {
   let totalRefund = 0;
   for (const r of rows) {
     byMethod[r.pay_method] = { income: money(r.income), refund: money(r.refund) };
-    totalIncome = money(totalIncome + r.income);
-    totalRefund = money(totalRefund + r.refund);
+    if (r.pay_method !== 'stored') {
+      totalIncome = money(totalIncome + r.income);
+      totalRefund = money(totalRefund + r.refund);
+    }
   }
   const cash = byMethod.cash || { income: 0, refund: 0 };
-  const cashShould = money(cash.income - cash.refund);
+  const shift = db.prepare('SELECT opening_cash FROM shifts WHERE id = ?').get(shiftId);
+  const cashShould = money(Number(shift && shift.opening_cash || 0) + cash.income - cash.refund);
   return { by_method: byMethod, total_income: totalIncome, total_refund: totalRefund, cash_should: cashShould };
 }
 
@@ -53,16 +56,19 @@ function current({ req }) {
 function start({ req, body }) {
   const active = db.prepare("SELECT * FROM shifts WHERE staff_id = ? AND status = 'active'").get(req.user.id);
   if (active) return ok({ shift: decorate(active) });
+  const openingCash = money(body.opening_cash || 0);
+  if (!Number.isFinite(Number(body.opening_cash || 0)) || openingCash < 0) return fail(400, '开班备用金不能为负数');
   const r = db.prepare("INSERT INTO shifts(staff_id, started_at, opening_cash, status) VALUES (?, ?, ?, 'active')")
-    .run(req.user.id, now(), money(body.opening_cash || 0));
+    .run(req.user.id, now(), openingCash);
   const s = db.prepare('SELECT * FROM shifts WHERE id = ?').get(Number(r.lastInsertRowid));
   return ok({ shift: decorate(s) }, 201);
 }
 
 // GET /api/shifts/:id
-function get({ params }) {
+function get({ params, req }) {
   const s = db.prepare('SELECT * FROM shifts WHERE id = ?').get(params.id);
   if (!s) return fail(404, '班次不存在');
+  if (req.user.role === 'frontdesk' && Number(s.staff_id) !== Number(req.user.id)) return fail(403, '前台只能查看自己的班次');
   const orders = db.prepare('SELECT * FROM orders WHERE shift_id = ? ORDER BY id DESC LIMIT 500').all(s.id);
   const summary = shiftSummary(s.id);
   return ok({ shift: decorate(s), summary, orders });
@@ -76,6 +82,7 @@ function close({ params, body, req }) {
   if (Number(s.staff_id) !== Number(req.user.id) && req.user.role === 'frontdesk') return fail(403, '前台只能交自己的班');
   const summary = shiftSummary(s.id);
   const actualCash = body.actual_cash === undefined || body.actual_cash === '' ? null : money(Number(body.actual_cash));
+  if (actualCash !== null && (!Number.isFinite(Number(body.actual_cash)) || actualCash < 0)) return fail(400, '实点现金必须是非负数');
   let difference = null;
   if (actualCash !== null) difference = money(actualCash - summary.cash_should);
   if (difference !== null && Math.abs(difference) > 0.001 && !(body.note || '').trim()) {

@@ -24,9 +24,13 @@ function get() {
 
 function update({ body, req }) {
   if (!body || typeof body !== 'object') return get();
-  const protectedKeys = ['wechat_appid', 'wechat_secret', 'icp_no', 'public_security_no'];
+  const protectedKeys = [
+    'wechat_appid', 'wechat_secret', 'icp_no', 'public_security_no',
+    'sms_enabled', 'sms_secret_id', 'sms_secret_key', 'sms_sdk_app_id',
+    'sms_sign_name', 'sms_template_account_change'
+  ];
   if (req.user.role !== 'admin' && protectedKeys.some((k) => Object.prototype.hasOwnProperty.call(body, k))) {
-    return fail(403, '仅超管可以修改微信小程序配置和备案号');
+    return fail(403, '微信、小程序备案和短信配置仅限超管维护');
   }
   // AppSecret 不会回传到前端；前端保存普通设置时会带回空值，不能因此覆盖已有密钥。
   // 如需清空密钥，使用明确的 clear_wechat_secret 标志，避免误操作。

@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { buildRouter } = require('./src/api');
 const { sendJSON } = require('./src/http');
-const { getSetting } = require('./src/db');
+const { getSetting, DB_PATH } = require('./src/db');
 const { findStaffByToken } = require('./src/auth');
 const { prune } = require('./src/api/audit');
 
@@ -63,6 +63,10 @@ function getToken(req) {
 }
 
 const server = http.createServer(async (req, res) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   const url = new URL(req.url, 'http://localhost');
   let pathname;
   try {
@@ -111,7 +115,7 @@ server.listen(PORT, HOST, () => {
   console.log(`  ${getSetting('store_name')} - 游泳池管理系统`);
   console.log('==============================================');
   console.log(`  服务已启动：http://localhost:${PORT}`);
-  console.log(`  数据库文件：${path.join(__dirname, 'data', 'pool.db')}`);
+  console.log(`  数据库文件：${DB_PATH}`);
   console.log('  安全提示：首次部署后请立即修改初始账号密码，并妥善备份数据库。');
   console.log('  按 Ctrl+C 停止服务');
   console.log('==============================================');

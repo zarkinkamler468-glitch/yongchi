@@ -130,6 +130,15 @@ function create({ body, req }) {
   // 开卡、权益变更、支付记录必须作为一个原子操作；任一步失败都不能留下卡余额或次数。
   db.exec('BEGIN IMMEDIATE');
   try {
+  const requestId = String(body.request_id || '').trim() || null;
+  if (requestId && requestId.length > 100) throw httpError(400, '请求编号格式无效');
+  if (requestId) {
+    const existing = db.prepare("SELECT * FROM orders WHERE request_id = ? AND staff_id = ? AND order_type IN ('open','renew','recharge')").get(requestId, req.user.id);
+    if (existing) {
+      db.exec('COMMIT');
+      return ok({ order: decorateOrder(existing), order_no: existing.order_no, amount: existing.paid_amount, repeated: true });
+    }
+  }
   const orderType = body.order_type;
   if (!['open', 'renew', 'recharge'].includes(orderType)) throw httpError(400, '无效的业务类型');
   const member = resolveMember(body);
@@ -200,6 +209,7 @@ function create({ body, req }) {
   }
 
   const discount = money(body.discount_amount || 0);
+  if (!Number.isFinite(Number(body.discount_amount || 0)) || discount < 0) throw httpError(400, '优惠金额不能为负数');
   const payable = money(total - discount);
   if (payable < 0) throw httpError(400, '优惠金额不能超过应付金额');
 
@@ -217,16 +227,17 @@ function create({ body, req }) {
 
   // 创建订单
   const orderNo = nextOrderNo();
-  const r = db.prepare(`INSERT INTO orders(order_no, order_type, member_id, member_card_id, total_amount, discount_amount, payable_amount, paid_amount, status, shift_id, staff_id, benefit_uses, benefit_amount, benefit_days, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?, ?, ?, ?, ?)`)
-    .run(orderNo, orderType, member.id, memberCardId, total, discount, payable, shift.id, staff.id, benefitUses, benefitAmount, benefitDays, ts);
+  const r = db.prepare(`INSERT INTO orders(order_no, order_type, member_id, member_card_id, total_amount, discount_amount, payable_amount, paid_amount, status, shift_id, staff_id, benefit_uses, benefit_amount, benefit_days, request_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?, ?, ?, ?, ?, ?)`)
+    .run(orderNo, orderType, member.id, memberCardId, total, discount, payable, shift.id, staff.id, benefitUses, benefitAmount, benefitDays, requestId, ts);
   const orderId = Number(r.lastInsertRowid);
   if (orderType === 'open') db.prepare('UPDATE member_cards SET created_order_id = ? WHERE id = ?').run(orderId, memberCardId);
 
   // 生成支付记录（储值支付同步扣余额）
   for (const p of pays) {
     let sourceCardId = null;
-    if (p.pay_method === 'stored') sourceCardId = deductStored(member.id, money(p.amount), orderType === 'open' ? memberCardId : null).id;
+    // 目标储值卡不能支付自己的开卡、续费或充值订单，否则会形成“先入账再扣款”的虚假收入。
+    if (p.pay_method === 'stored') sourceCardId = deductStored(member.id, money(p.amount), memberCardId).id;
     db.prepare('INSERT INTO payments(order_id, source_card_id, pay_method, amount, transaction_no, paid_at, staff_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(orderId, sourceCardId, p.pay_method, money(p.amount), p.transaction_no || null, ts, staff.id);
   }
@@ -254,6 +265,12 @@ function refundApply({ params, body, req }) {
   if (req.user.role === 'frontdesk' && Number(o.staff_id) !== Number(req.user.id)) return fail(403, '前台只能为本人订单申请退款');
   if (!['open', 'renew', 'recharge'].includes(o.order_type)) return fail(400, '该订单不可退款');
   if (!['paid', 'partial_refund'].includes(o.status)) return fail(400, '该订单状态不可退款');
+  const requestId = String(body.request_id || '').trim() || null;
+  if (requestId && requestId.length > 100) return fail(400, '请求编号格式无效');
+  if (requestId) {
+    const existing = db.prepare("SELECT * FROM orders WHERE request_id = ? AND staff_id = ? AND order_type = 'refund'").get(requestId, req.user.id);
+    if (existing) return ok({ refund: decorateOrder(existing), repeated: true });
+  }
   // 待审批的退款也占用额度，避免同一订单重复提交全额退款。
   const max = money(Number(o.paid_amount) - alreadyRefunded(o.id) - pendingRefunded(o.id));
   if (max <= 0) return fail(400, '该订单已无可退金额');
@@ -261,10 +278,12 @@ function refundApply({ params, body, req }) {
   if (!(amount > 0)) return fail(400, '退款金额无效');
   if (amount > max + 0.001) return fail(400, `退款金额不能超过可退金额 ${max}`);
   const reason = (body.reason || '').trim();
+  if (!reason) return fail(400, '请填写退款原因');
+  if (reason.length > 500) return fail(400, '退款原因不能超过 500 个字');
   const ts = now();
-  const r = db.prepare(`INSERT INTO orders(order_no, order_type, member_id, member_card_id, original_order_id, total_amount, payable_amount, paid_amount, status, staff_id, refund_reason, created_at)
-    VALUES (?, 'refund', ?, ?, ?, ?, ?, 0, 'pending', ?, ?, ?)`)
-    .run(nextOrderNo(), o.member_id, o.member_card_id, o.id, amount, amount, req.user.id, reason, ts);
+  const r = db.prepare(`INSERT INTO orders(order_no, order_type, member_id, member_card_id, original_order_id, total_amount, payable_amount, paid_amount, status, staff_id, refund_reason, request_id, created_at)
+    VALUES (?, 'refund', ?, ?, ?, ?, ?, 0, 'pending', ?, ?, ?, ?)`)
+    .run(nextOrderNo(), o.member_id, o.member_card_id, o.id, amount, amount, req.user.id, reason, requestId, ts);
   audit.record({ req, action: '退款申请', target_type: 'order', target_id: Number(r.lastInsertRowid), after: { original_order_id: o.id, amount, reason } });
   return ok({ refund: decorateOrder(orderById(Number(r.lastInsertRowid))) }, 201);
 }
@@ -350,11 +369,10 @@ function refundApprove({ params, body, req }) {
     }
   }
 
-  db.prepare("UPDATE orders SET status = 'paid', approved_by = ? WHERE id = ?").run(req.user.id, r.id);
-  // 退款的负向流水归入审批人的当前班次，否则交班汇总会漏掉退款。
+  // 退款按审批通过时间入账，并归入审批人的当前班次，不能回写已经关闭的原销售班次。
   const activeRefundShift = db.prepare("SELECT id FROM shifts WHERE staff_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1").get(req.user.id);
-  const refundShiftId = activeRefundShift ? activeRefundShift.id : o.shift_id;
-  if (refundShiftId) db.prepare('UPDATE orders SET shift_id = ? WHERE id = ?').run(refundShiftId, r.id);
+  db.prepare("UPDATE orders SET status = 'paid', approved_by = ?, approved_at = ?, shift_id = ? WHERE id = ?")
+    .run(req.user.id, ts, activeRefundShift ? activeRefundShift.id : null, r.id);
   const newRefunded = money(alreadyRefunded(o.id));
   const origStatus = Math.abs(Number(o.paid_amount) - newRefunded) <= 0.01 ? 'refunded' : 'partial_refund';
   db.prepare('UPDATE orders SET status = ? WHERE id = ?').run(origStatus, o.id);

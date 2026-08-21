@@ -24,7 +24,9 @@ function resolveMember(body) {
   }
   const name = (body.name || '').trim();
   if (!name) throw httpError(400, '请填写会员姓名');
+  if (name.length > 50) throw httpError(400, '姓名不能超过 50 个字');
   const phone = normalizePhone(body.phone) || null;
+  if (phone && !/^1\d{10}$/.test(phone)) throw httpError(400, '手机号格式无效');
   if (phone) {
     const dup = db.prepare('SELECT * FROM members WHERE phone = ?').get(phone);
     if (dup) throw httpError(400, '该手机号已绑定其他会员，不可重复');

@@ -9,12 +9,18 @@ function dayRange(date) {
 }
 
 function incomeBetween(from, to) {
-  const r = db.prepare("SELECT COALESCE(SUM(paid_amount),0) AS v FROM orders WHERE order_type IN ('open','renew','recharge') AND status IN ('paid','partial_refund','refunded') AND created_at >= ? AND created_at < ?").get(from, to);
+  const r = db.prepare(`SELECT COALESCE(SUM(p.amount),0) AS v FROM payments p JOIN orders o ON o.id=p.order_id
+    WHERE o.order_type IN ('open','renew','recharge') AND p.amount > 0 AND p.pay_method != 'stored' AND p.paid_at >= ? AND p.paid_at < ?`).get(from, to);
   return Number(r.v) - refundBetween(from, to);
 }
 function refundBetween(from, to) {
-  const r = db.prepare("SELECT COALESCE(SUM(total_amount),0) AS v FROM orders WHERE order_type = 'refund' AND status = 'paid' AND created_at >= ? AND created_at < ?").get(from, to);
+  const r = db.prepare(`SELECT COALESCE(SUM(-p.amount),0) AS v FROM payments p JOIN orders o ON o.id=p.order_id
+    WHERE o.order_type='refund' AND o.status='paid' AND p.amount < 0 AND p.pay_method != 'stored' AND p.paid_at >= ? AND p.paid_at < ?`).get(from, to);
   return Number(r.v);
+}
+function externalIncomeByType(type, from, to) {
+  return Number(db.prepare(`SELECT COALESCE(SUM(p.amount),0) AS v FROM payments p JOIN orders o ON o.id=p.order_id
+    WHERE o.order_type=? AND p.amount > 0 AND p.pay_method != 'stored' AND p.paid_at >= ? AND p.paid_at < ?`).get(type, from, to).v);
 }
 function reportRange(query) {
   const from = query.get('from') || addDays(today(), -29);
@@ -30,9 +36,9 @@ function dashboard({ req }) {
   const [d0, d1] = dayRange(today());
   const income = incomeBetween(d0, d1);
   const refund = refundBetween(d0, d1);
-  const open = db.prepare("SELECT COALESCE(SUM(paid_amount),0) AS v FROM orders WHERE order_type='open' AND status IN ('paid','partial_refund','refunded') AND created_at >= ? AND created_at < ?").get(d0, d1).v;
-  const renew = db.prepare("SELECT COALESCE(SUM(paid_amount),0) AS v FROM orders WHERE order_type='renew' AND status IN ('paid','partial_refund','refunded') AND created_at >= ? AND created_at < ?").get(d0, d1).v;
-  const recharge = db.prepare("SELECT COALESCE(SUM(paid_amount),0) AS v FROM orders WHERE order_type='recharge' AND status IN ('paid','partial_refund','refunded') AND created_at >= ? AND created_at < ?").get(d0, d1).v;
+  const open = externalIncomeByType('open', d0, d1);
+  const renew = externalIncomeByType('renew', d0, d1);
+  const recharge = externalIncomeByType('recharge', d0, d1);
   const entries = db.prepare("SELECT COUNT(*) AS v FROM entries WHERE result='success' AND entry_at >= ? AND entry_at < ?").get(d0, d1).v;
   const expiring = db.prepare("SELECT COUNT(*) AS v FROM member_cards WHERE card_type IN ('month','year') AND status = 'normal' AND end_at IS NOT NULL AND end_at >= ? AND end_at <= ?").get(today(), addDays(today(), 7)).v;
   const lowBalance = db.prepare("SELECT COUNT(*) AS v FROM member_cards mc WHERE mc.card_type='stored' AND mc.status='normal' AND mc.balance < mc.entry_fee").get().v;
@@ -112,8 +118,8 @@ function staffPerformance({ query }) {
       COALESCE(SUM(CASE WHEN o.order_type = 'recharge' AND o.status IN ('paid','partial_refund','refunded') THEN 1 ELSE 0 END),0) AS recharge_count,
       COALESCE(SUM(CASE WHEN o.order_type = 'recharge' AND o.status IN ('paid','partial_refund','refunded') THEN o.paid_amount ELSE 0 END),0) AS recharge_amount,
       COALESCE(SUM(CASE WHEN o.order_type IN ('open','renew','recharge') AND o.status IN ('paid','partial_refund','refunded') THEN o.paid_amount ELSE 0 END),0) AS gross_amount,
-      COALESCE((SELECT COUNT(*) FROM orders r JOIN orders original ON original.id=r.original_order_id WHERE r.order_type='refund' AND r.status='paid' AND original.staff_id=s.id AND r.created_at >= ? AND r.created_at <= ?),0) AS refund_count,
-      COALESCE((SELECT SUM(r.total_amount) FROM orders r JOIN orders original ON original.id=r.original_order_id WHERE r.order_type='refund' AND r.status='paid' AND original.staff_id=s.id AND r.created_at >= ? AND r.created_at <= ?),0) AS refund_amount
+      COALESCE((SELECT COUNT(*) FROM orders r JOIN orders original ON original.id=r.original_order_id WHERE r.order_type='refund' AND r.status='paid' AND original.staff_id=s.id AND COALESCE(r.approved_at,r.created_at) >= ? AND COALESCE(r.approved_at,r.created_at) <= ?),0) AS refund_count,
+      COALESCE((SELECT SUM(r.total_amount) FROM orders r JOIN orders original ON original.id=r.original_order_id WHERE r.order_type='refund' AND r.status='paid' AND original.staff_id=s.id AND COALESCE(r.approved_at,r.created_at) >= ? AND COALESCE(r.approved_at,r.created_at) <= ?),0) AS refund_amount
     FROM staff s LEFT JOIN orders o ON o.staff_id = s.id AND o.created_at >= ? AND o.created_at <= ?
     WHERE s.status = 'active' OR EXISTS (SELECT 1 FROM orders ox WHERE ox.staff_id=s.id AND ox.created_at >= ? AND ox.created_at <= ?)
     GROUP BY s.id ORDER BY gross_amount DESC, s.id

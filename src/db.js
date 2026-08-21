@@ -213,7 +213,14 @@ ensureColumn('staff', 'wx_openid', 'wx_openid TEXT');
 ensureColumn('orders', 'benefit_uses', 'benefit_uses INTEGER NOT NULL DEFAULT 0');
 ensureColumn('orders', 'benefit_amount', 'benefit_amount REAL NOT NULL DEFAULT 0');
 ensureColumn('orders', 'benefit_days', 'benefit_days INTEGER NOT NULL DEFAULT 0');
+ensureColumn('orders', 'approved_at', 'approved_at TEXT');
+ensureColumn('orders', 'request_id', 'request_id TEXT');
 ensureColumn('payments', 'source_card_id', 'source_card_id INTEGER');
+ensureColumn('entries', 'request_id', 'request_id TEXT');
+db.exec('DROP INDEX IF EXISTS idx_orders_request_id;');
+db.exec('DROP INDEX IF EXISTS idx_entries_request_id;');
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_staff_request_id ON orders(staff_id, request_id) WHERE request_id IS NOT NULL;');
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_staff_request_id ON entries(staff_id, request_id) WHERE request_id IS NOT NULL;');
 
 // 兼容旧订单：新增退款权益快照字段后，为仍未发生退款的历史订单尽可能回填卡项权益。
 // 已经产生部分退款的订单不强行重算，避免改变既有账务结果。

@@ -59,7 +59,9 @@ function get({ params }) {
 function create({ body, req }) {
   const name = (body.name || '').trim();
   if (!name) return fail(400, '姓名不能为空');
+  if (name.length > 50) return fail(400, '姓名不能超过 50 个字');
   const phone = normalizePhone(body.phone) || null;
+  if (phone && !/^1\d{10}$/.test(phone)) return fail(400, '手机号格式无效');
   if (phone) {
     const dup = db.prepare('SELECT id FROM members WHERE phone = ?').get(phone);
     if (dup) return fail(400, '该手机号已绑定其他会员，不可重复');
@@ -80,7 +82,9 @@ function update({ params, body, req }) {
   if (!m) return fail(404, '会员不存在');
   const name = (body.name || '').trim();
   if (!name) return fail(400, '姓名不能为空');
+  if (name.length > 50) return fail(400, '姓名不能超过 50 个字');
   const phone = normalizePhone(body.phone) || null;
+  if (phone && !/^1\d{10}$/.test(phone)) return fail(400, '手机号格式无效');
   if (phone && phone !== m.phone) {
     const dup = db.prepare('SELECT id FROM members WHERE phone = ? AND id != ?').get(phone, m.id);
     if (dup) return fail(400, '该手机号已绑定其他会员，不可重复');
@@ -103,6 +107,7 @@ function addTag({ params, body, req }) {
   if (!m) return fail(404, '会员不存在');
   const tag = (body.tag_name || '').trim();
   if (!tag) return fail(400, '标签不能为空');
+  if (tag.length > 30) return fail(400, '标签不能超过 30 个字');
   const exists = db.prepare('SELECT id FROM member_tags WHERE member_id = ? AND tag_name = ?').get(m.id, tag);
   if (!exists) {
     db.prepare('INSERT INTO member_tags(member_id, tag_name, created_at) VALUES (?, ?, ?)').run(m.id, tag, now());
