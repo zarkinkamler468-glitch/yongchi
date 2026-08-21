@@ -40,7 +40,7 @@ Page({
   confirmCheckin() {
     const p = this.data.checkinPreview;
     if (!p) return;
-    request('/api/entries/checkin', { data: { keyword: this.data.checkinKeyword.trim(), people: Number(this.data.checkinPeople) || 1, gate_no: '小程序收银', confirmed: true } })
+    request('/api/entries/checkin', { data: { keyword: this.data.checkinKeyword.trim(), card_id: p.card && p.card.id, people: Number(this.data.checkinPeople) || 1, gate_no: '小程序收银', confirmed: true } })
       .then((d) => this.setData({ checkinPreview: null, checkinResult: { ok: true, pending: false, name: d.member.name, phone: d.member.phone, card: d.card.card_name, asset: d.card.card_type === 'count' ? `核销成功，剩余 ${d.card.remaining_uses} 次` : d.card.card_type === 'stored' ? `核销成功，余额 ${d.card.balance} 元` : `核销成功，有效期至 ${d.card.end_at || '—'}` } }))
       .catch((e) => this.setData({ checkinResult: { ok: false, error: e.message } }));
   },
@@ -76,13 +76,13 @@ Page({
       const type = this.data.tab === 'renew' ? '' : 'stored';
       const cards = (d.list || []).filter((c) => type ? c.card_type === type : true);
       const cardOptions = cards.map((c) => ({ ...c, label: `${c.card_no} · ${c.card_name || ''} · ${c.status === 'void' ? '已作废' : c.status === 'refunded' ? '已退款' : c.status === 'frozen' ? '已冻结' : c.card_type === 'stored' ? fmtMoney(c.balance) : (c.remaining_uses || 0) + '次'}` }));
-      const firstUsable = Math.max(0, cards.findIndex((c) => !['void', 'refunded'].includes(c.status)));
+      const firstUsable = Math.max(0, cards.findIndex((c) => !['void', 'refunded', 'frozen'].includes(c.status)));
       this.setData({ cards, cardOptions, cardIndex: firstUsable });
       this.filterRenewProducts(cards[firstUsable]);
     }).catch(() => {});
   },
   pickProduct(e) { this.setData({ productIndex: Number(e.detail.value) }); this.compute(); },
-  pickCard(e) { const idx = Number(e.detail.value); const card = this.data.cards[idx]; if (!card) return; if (['void', 'refunded'].includes(card.status)) { toast('已作废或退款的卡不可办理'); return; } this.setData({ cardIndex: idx }); this.filterRenewProducts(card); },
+  pickCard(e) { const idx = Number(e.detail.value); const card = this.data.cards[idx]; if (!card) return; if (['void', 'refunded', 'frozen'].includes(card.status)) { toast('已作废、退款或冻结的卡不可办理'); return; } this.setData({ cardIndex: idx }); this.filterRenewProducts(card); },
   filterRenewProducts(card) {
     if (this.data.tab !== 'renew') return;
     const products = card ? this.data.allProducts.filter((p) => p.type === card.card_type) : this.data.allProducts;
@@ -110,7 +110,7 @@ Page({
     if (!(payable > 0)) { toast('实收金额必须大于 0'); return; }
     if (tab === 'open' && !memberId && !newName.trim()) { toast('请选择已有会员或填写新会员姓名'); return; }
     if (['renew', 'recharge'].includes(tab) && !memberId) { toast('请先查询并选择会员'); return; }
-    if (['renew', 'recharge'].includes(tab) && selectedCard && ['void', 'refunded'].includes(selectedCard.status)) { toast('已作废或退款的卡不可办理'); return; }
+    if (['renew', 'recharge'].includes(tab) && selectedCard && ['void', 'refunded', 'frozen'].includes(selectedCard.status)) { toast('已作废、退款或冻结的卡不可办理'); return; }
     const body = {
       order_type: tab,
       member_id: memberId,

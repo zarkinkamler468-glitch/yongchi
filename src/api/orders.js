@@ -161,7 +161,7 @@ function create({ body, req }) {
   } else if (orderType === 'renew') {
     const card = db.prepare('SELECT * FROM member_cards WHERE id = ?').get(body.member_card_id);
     if (!card || Number(card.member_id) !== Number(member.id)) throw httpError(400, '请选择正确的会员卡');
-    if (['void', 'refunded'].includes(card.status)) throw httpError(400, '该卡已作废或退款，不可续费');
+    if (['void', 'refunded', 'frozen'].includes(card.status)) throw httpError(400, '该卡已作废、退款或冻结，不可续费');
     const cp = db.prepare('SELECT * FROM card_products WHERE id = ?').get(body.card_product_id);
     if (!cp || !cp.enabled) throw httpError(400, '请选择有效的续费卡项');
     if (cp.type !== card.card_type) throw httpError(400, '续费需与会员卡同卡种');
@@ -191,7 +191,7 @@ function create({ body, req }) {
     const card = db.prepare('SELECT * FROM member_cards WHERE id = ?').get(body.member_card_id);
     if (!card || Number(card.member_id) !== Number(member.id)) throw httpError(400, '请选择正确的会员卡');
     if (card.card_type !== 'stored') throw httpError(400, '储值充值需选择储值卡');
-    if (['void', 'refunded'].includes(card.status)) throw httpError(400, '该卡已作废或退款，不可充值');
+    if (['void', 'refunded', 'frozen'].includes(card.status)) throw httpError(400, '该卡已作废、退款或冻结，不可充值');
     total = money(body.amount);
     if (!(total > 0)) throw httpError(400, '充值金额必须大于 0');
     memberCardId = card.id;

@@ -18,7 +18,7 @@ Page({
           statusClass: d.member.status === 'normal' ? 'green' : d.member.status === 'blacklist' ? 'red' : 'gray',
           tagsText: (d.member.tags || []).map((t) => t.tag_name).join('、')
         },
-        cards: d.cards.map((c) => ({ ...c, typeText: cardTypeLabel(c.card_type), typeClass: cardTypeClass(c.card_type), statusText: cardStatusLabel(c.status), statusClass: cardStatusClass(c.status), assetText: cardAssetText(c), canRecharge: c.card_type === 'stored' && !['void', 'refunded'].includes(c.status) })),
+        cards: d.cards.map((c) => ({ ...c, typeText: cardTypeLabel(c.card_type), typeClass: cardTypeClass(c.card_type), statusText: cardStatusLabel(c.status), statusClass: cardStatusClass(c.status), assetText: cardAssetText(c), canRecharge: c.card_type === 'stored' && !['void', 'refunded', 'frozen'].includes(c.status) })),
         entries: d.entries.map((e) => ({ ...e, timeText: fmtDateTime(e.entry_at), resultOk: e.result === 'success' })),
         orders: d.orders.map((o) => ({ ...o, typeText: orderTypeLabel(o.order_type), statusText: orderStatusLabel(o.status), amountText: fmtMoney(o.paid_amount) }))
       });
@@ -38,13 +38,13 @@ Page({
   doCheckin() {
     const m = this.data.member;
     request('/api/entries/preview?keyword=' + encodeURIComponent(m.member_no) + '&people=1')
-      .then((d) => this.setData({ checkinPreview: { cardName: d.card.card_name, cardType: d.card.card_type, uses: d.card.preview_deducted_uses, amount: fmtMoney(d.card.preview_deducted_amount), remaining: d.card.remaining_uses, balance: fmtMoney(d.card.balance) } }))
+      .then((d) => this.setData({ checkinPreview: { cardId: d.card.id, cardName: d.card.card_name, cardType: d.card.card_type, uses: d.card.preview_deducted_uses, amount: fmtMoney(d.card.preview_deducted_amount), remaining: d.card.remaining_uses, balance: fmtMoney(d.card.balance) } }))
       .catch((e) => toast(e.message));
   },
   cancelCheckin() { this.setData({ checkinPreview: null }); },
   confirmCheckin() {
     const m = this.data.member;
-    request('/api/entries/checkin', { data: { keyword: m.member_no, gate_no: '小程序会员详情', people: 1, confirmed: true } })
+    request('/api/entries/checkin', { data: { keyword: m.member_no, card_id: this.data.checkinPreview && this.data.checkinPreview.cardId, gate_no: '小程序会员详情', people: 1, confirmed: true } })
       .then(() => { toast('核销成功', 'success'); this.setData({ checkinPreview: null }); this.load(); })
       .catch((e) => toast(e.message));
   }

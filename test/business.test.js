@@ -184,3 +184,15 @@ test('前台不能为其他前台经手的订单申请退款', () => {
   assert.equal(result.status, 403);
   assert.equal(db.prepare("SELECT COUNT(*) n FROM orders WHERE original_order_id = ? AND order_type = 'refund'").get(order.id).n, 0);
 });
+
+test('冻结会员卡不能续费或储值充值', () => {
+  const order = openCard({ name: '冻结卡业务', phone: '13900000011', type: 'stored' });
+  db.prepare("UPDATE member_cards SET status = 'frozen' WHERE id = ?").run(order.member_card_id);
+  const productStored = product('stored');
+  const result = orders.create({ body: { order_type: 'recharge', member_id: order.member_id, member_card_id: order.member_card_id, amount: 100, payments: [{ pay_method: 'cash', amount: 100 }] }, req: req('frontdesk') });
+  assert.equal(result.status, 400);
+  assert.match(result.body.error, /冻结/);
+  const renew = orders.create({ body: { order_type: 'renew', member_id: order.member_id, member_card_id: order.member_card_id, card_product_id: productStored.id, payments: [{ pay_method: 'cash', amount: productStored.price }] }, req: req('frontdesk') });
+  assert.equal(renew.status, 400);
+  assert.match(renew.body.error, /冻结/);
+});

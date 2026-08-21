@@ -45,6 +45,7 @@ function resolveUsableCard(member, specified) {
 // GET /api/entries/preview：只查询，不扣次数/余额，不写失败记录
 function preview({ query }) {
   const keyword = (query.get('keyword') || '').trim();
+  const requestedCardId = Number(query.get('card_id')) || null;
   const people = Math.max(1, Math.floor(Number(query.get('people')) || 1));
   if (!keyword) return fail(400, '请输入卡号、手机号或会员编号');
   const found = memberByKeyword(keyword);
@@ -52,7 +53,13 @@ function preview({ query }) {
   const member = found.member;
   if (member.status === 'blacklist') return fail(400, '黑名单会员禁止入场');
   if (member.status === 'inactive') return fail(400, '会员已停用');
-  const card = resolveUsableCard(member, found.card);
+  let specifiedCard = found.card || null;
+  if (requestedCardId) {
+    specifiedCard = db.prepare('SELECT * FROM member_cards WHERE id = ? AND member_id = ?').get(requestedCardId, member.id);
+    if (!specifiedCard) return fail(404, '指定会员卡不存在或不属于该会员');
+    if (found.card && Number(found.card.id) !== requestedCardId) return fail(400, '查询卡号与指定会员卡不一致');
+  }
+  const card = requestedCardId ? specifiedCard : resolveUsableCard(member, specifiedCard);
   if (!card) return fail(400, '无有效会员卡');
   const check = cardUsable(card);
   if (!check.ok) return fail(400, check.reason);
@@ -92,6 +99,13 @@ function checkin({ body, req }) {
   const found = memberByKeyword(keyword);
   if (!found || !found.member) return fail(404, '未找到对应会员或卡号');
   const member = found.member;
+  const requestedCardId = Number(body.card_id) || null;
+  if (requestedCardId) {
+    const specifiedCard = db.prepare('SELECT * FROM member_cards WHERE id = ? AND member_id = ?').get(requestedCardId, member.id);
+    if (!specifiedCard) return fail(404, '指定会员卡不存在或不属于该会员');
+    if (found.card && Number(found.card.id) !== requestedCardId) return fail(400, '查询卡号与指定会员卡不一致');
+    found.card = specifiedCard;
+  }
   const staff = req.user;
   const gateNo = (body.gate_no || '').trim() || '前台';
   const people = Math.max(1, Math.floor(Number(body.people) || 1));
@@ -119,6 +133,7 @@ function checkin({ body, req }) {
 
   // 选择可用卡
   let card = found.card || null;
+  if (requestedCardId && card && !cardUsable(card).ok) return recordFail(cardUsable(card).reason);
   if (!card || !cardUsable(card).ok) {
     const cards = db.prepare('SELECT * FROM member_cards WHERE member_id = ? ORDER BY id').all(member.id);
     card = null;

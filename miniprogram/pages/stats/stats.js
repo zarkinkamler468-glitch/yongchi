@@ -26,7 +26,7 @@ Page({
       const max = Math.max(1, ...d.by_card.map((x) => Number(x.amount)));
       this.setData({
         breakdown: d.by_card.map((x) => ({
-          label: cardTypeLabel(x.card_type), amount: fmtMoney(x.amount), color: HEX[x.card_type] || '#94a3b8', w: Math.round((Number(x.amount) / max) * 100)
+          label: cardTypeLabel(x.card_type), amount: fmtMoney(x.amount), color: HEX[x.card_type] || '#94a3b8', w: Math.max(0, Math.round((Number(x.amount) / max) * 100))
         }))
       });
     }).catch(() => {});
