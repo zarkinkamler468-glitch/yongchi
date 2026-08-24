@@ -334,7 +334,8 @@ function refundApprove({ params, body, req }) {
   const r = orderById(params.id);
   if (!r || r.order_type !== 'refund') throw httpError(404, '退款单不存在');
   if (r.status !== 'pending') throw httpError(400, '该退款单已处理');
-  if (Number(r.staff_id) === Number(req.user.id) && req.user.role !== 'admin') throw httpError(403, '退款申请人与审批人不能是同一账号');
+  // 老板承担最终退款责任，可以自审；前台和财务仍必须由其他有权账号审批，超管可处理全部退款。
+  if (Number(r.staff_id) === Number(req.user.id) && !['admin', 'boss'].includes(req.user.role)) throw httpError(403, '退款申请人与审批人不能是同一账号');
   const o = orderById(r.original_order_id);
   if (!o) throw httpError(404, '原订单不存在');
   const method = body.refund_method === 'cash' ? 'cash' : 'original';

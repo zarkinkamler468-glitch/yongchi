@@ -292,6 +292,12 @@ test('阿里云签名编码符合 RFC3986 特殊字符要求', () => {
   assert.equal(sms.aliyunEncode('a b+c'), 'a%20b%2Bc');
 });
 
+test('阿里云个人姓名变量对单字和异常姓名做短信参数兜底', () => {
+  assert.equal(sms.aliyunName('李'), '李某');
+  assert.equal(sms.aliyunName('李娜'), '李娜');
+  assert.equal(sms.aliyunName('会员 01'), '会员用户');
+});
+
 test('有有效期的次卡过期后不能核销', () => {
   const order = openCard({ name: '过期次卡', phone: '13900000017', type: 'count' });
   db.prepare("UPDATE member_cards SET end_at = ? WHERE id = ?").run(addDays(today(), -1), order.member_card_id);
@@ -334,6 +340,15 @@ test('财务不参与班次且财务审批退款不会创建或改写班次', ()
   const overview = reports.overview({ query });
   assert.equal(overview.status, 200);
   assert.ok(overview.body.refund >= 10);
+});
+
+test('老板可以提交并审批自己的退款申请', () => {
+  const order = openCard({ name: '老板自审退款', phone: '13900000028', type: 'count', operator: 'boss' });
+  const refund = requestRefund(order, 10, 'boss');
+  const approved = approveRefund(refund, 'boss');
+  assert.equal(approved.status, 200, approved.body.error);
+  assert.equal(db.prepare('SELECT status, approved_by FROM orders WHERE id = ?').get(refund.id).status, 'paid');
+  assert.equal(db.prepare('SELECT approved_by FROM orders WHERE id = ?').get(refund.id).approved_by, staff.boss.id);
 });
 
 test('已通过退款按审批时间筛选并与流水显示时间一致', () => {

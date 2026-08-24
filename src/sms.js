@@ -49,6 +49,18 @@ function requestTencent(payload, c) {
 function aliyunEncode(value) {
   return encodeURIComponent(String(value)).replace(/!/g, '%21').replace(/'/g, '%27').replace(/\(/g, '%28').replace(/\)/g, '%29').replace(/\*/g, '%2A');
 }
+
+// 阿里云“个人姓名”变量会校验长度和字符。会员资料允许单字姓名，
+// 发送短信时不能把原值直接传给该变量，否则会被 TEMPLATE_PARAMS_ILLEGAL 拒绝。
+// 仅对短信参数做兜底，不修改数据库里的真实会员姓名。
+function aliyunName(value) {
+  const name = String(value || '').trim().replace(/\s+/g, '');
+  if (/^[\u4e00-\u9fff]{2,6}$/.test(name)) return name;
+  if (/^[\u4e00-\u9fff]$/.test(name)) return name + '某';
+  if (/^[A-Za-z][A-Za-z .'-]{1,39}$/.test(name)) return name.slice(0, 40);
+  return '会员用户';
+}
+
 function requestAliyun(phone, variables, c) {
   const params = {
     AccessKeyId: c.accessKeyId, Action: 'SendSms', Format: 'JSON', PhoneNumbers: phone, SignName: c.signName,
@@ -64,7 +76,10 @@ function requestAliyun(phone, variables, c) {
       res.on('end', () => { try { const j = JSON.parse(raw); if (j.Code !== 'OK') reject(new Error((j.Code || 'AliyunError') + '：' + (j.Message || '短信发送失败'))); else resolve(j); } catch (e) { reject(e instanceof SyntaxError ? new Error('阿里云短信响应解析失败') : e); } });
     });
     req.on('timeout', () => req.destroy(new Error('阿里云短信请求超时')));
-    req.on('error', reject); req.end();
+    req.on('error', (e) => {
+      if (e && e.code === 'ENOTFOUND') reject(new Error('阿里云短信域名解析失败，请检查服务器 DNS 和外网访问（dysmsapi.aliyuncs.com:443）'));
+      else reject(e);
+    }); req.end();
   });
 }
 
@@ -76,7 +91,7 @@ async function send(phone, params, options = {}) {
   if (c.provider === 'aliyun') {
     const a = c.aliyun;
     if (!a.accessKeyId || !a.accessKeySecret || !a.signName || !a.templateCode) return { skipped: true };
-    const response = await requestAliyun(target, { name: values[0] || '会员', type: values[1] || '账户变动', detail: values[2] || '请联系门店查询' }, a);
+    const response = await requestAliyun(target, { name: aliyunName(values[0]), type: values[1] || '账户变动', detail: values[2] || '请联系门店查询' }, a);
     return { skipped: false, serial_no: response.BizId || response.RequestId, provider: 'aliyun' };
   }
   const t = c.tencent;
@@ -99,4 +114,4 @@ function publicConfig() {
   };
 }
 
-module.exports = { send, accountChange, publicConfig, aliyunEncode };
+module.exports = { send, accountChange, publicConfig, aliyunEncode, aliyunName };
