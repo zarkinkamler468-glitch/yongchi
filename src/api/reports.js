@@ -75,7 +75,7 @@ function overview({ query }) {
   const income = incomeBetween(from, to);
   const refund = refundBetween(from, to);
   const entries = db.prepare("SELECT COUNT(*) AS v FROM entries WHERE result='success' AND entry_at >= ? AND entry_at < ?").get(from, to).v;
-  const newMembers = db.prepare('SELECT COUNT(*) AS v FROM members WHERE created_at >= ? AND created_at < ?').get(from, to).v;
+  const newMembers = db.prepare('SELECT COUNT(*) AS v FROM members WHERE is_imported = 0 AND created_at >= ? AND created_at < ?').get(from, to).v;
 
   const byCard = db.prepare(`
     SELECT mc.card_type, COALESCE(SUM(p.amount),0) AS amount

@@ -13,6 +13,7 @@ const auth = require('./auth');
 const staff = require('./staff');
 const smsSettings = require('./sms-settings');
 const audit = require('./audit');
+const memberImport = require('./member-import');
 
 // 角色：boss 老板 / frontdesk 前台 / finance 财务
 const BOSS = ['boss'];
@@ -42,6 +43,9 @@ function buildRouter() {
   get('/api/members', members.list, { roles: FRONT });
   get('/api/members/:id', members.get, { roles: FRONT });
   post('/api/members', members.create, { roles: FRONT, action: '会员建档', module: 'member', audit: false });
+  post('/api/members/import/preview', memberImport.preview, { roles: ['admin'] });
+  post('/api/members/import/commit', memberImport.commit, { roles: ['admin'], audit: false });
+  get('/api/members/import/template', memberImport.downloadTemplate, { roles: ['admin'] });
   put('/api/members/:id', members.update, { roles: FRONT, action: '编辑会员', module: 'member', audit: false });
   post('/api/members/:id/tags', members.addTag, { roles: FRONT, action: '添加会员标签', module: 'member', audit: false });
   del('/api/members/:id/tags/:tagId', members.removeTag, { roles: FRONT, action: '删除会员标签', module: 'member', audit: false });

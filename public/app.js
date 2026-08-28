@@ -93,6 +93,13 @@ function downloadCSV(csv, filename) {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
+function downloadBase64(data, filename, mime = 'application/octet-stream') {
+  const raw = atob(data); const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+  const a = document.createElement('a'); a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+}
 
 /* ============================= 图表 ============================= */
 function niceMax(v) { if (v <= 0) return 1; const p = Math.pow(10, Math.floor(Math.log10(v))); const d = v / p; const m = d <= 1 ? 1 : d <= 2 ? 2 : d <= 5 ? 5 : 10; return m * p; }
@@ -348,12 +355,50 @@ function renderMembers() {
         <option value="">全部状态</option><option value="normal">正常</option><option value="blacklist">黑名单</option><option value="inactive">停用</option>
       </select>
       <div class="spacer"></div>
+      ${state.user?.role === 'admin' ? '<button class="btn btn-outline" data-action="downloadMemberTemplate">下载 Excel 模板</button><button class="btn btn-primary" data-action="openMemberImport">导入会员</button>' : ''}
       <button class="btn btn-primary" data-action="openMemberForm">＋ 新增会员</button>
     </div>
     <div class="card"><div class="table-wrap"><table>
       <thead><tr><th>会员号</th><th>姓名</th><th>手机号</th><th>标签</th><th>状态</th><th>卡数</th><th>操作</th></tr></thead>
       <tbody id="membersBody"></tbody></table></div></div>`;
   refreshMembers();
+}
+
+function openMemberImport() {
+  state.memberImport = null;
+  openModal(`<div class="modal-head"><h3>批量导入会员与会员卡</h3><button class="modal-close" data-action="closeModal">×</button></div>
+    <div class="modal-body"><p class="hint">支持 CSV、XLSX，最多 5000 行、3MB。请使用系统模板；导入只创建历史会员和会员卡，不生成订单、支付、班次、营收或提成记录。</p>
+    <div class="flex mb-16"><button class="btn btn-sm btn-outline" data-action="downloadMemberTemplate">下载 Excel 模板</button><button class="btn btn-sm btn-outline" data-action="downloadMemberCsvTemplate">下载 CSV 模板</button></div>
+    <div class="field"><label>选择文件</label><input class="input" id="memberImportFile" type="file" accept=".csv,.xlsx" data-change="memberImportFile"></div>
+    <div id="memberImportResult" class="mt-16"></div></div>
+    <div class="modal-foot"><button class="btn" data-action="closeModal">取消</button><button class="btn btn-primary" id="memberImportCommit" data-action="commitMemberImport" disabled>确认导入</button></div>`, true);
+}
+function downloadMemberTemplate() {
+  api('/api/members/import/template').then((d) => downloadBase64(d.data, d.filename, d.mime)).catch((e) => toast(e.message, 'error'));
+}
+function downloadMemberCsvTemplate() { api('/api/members/import/template?format=csv').then((d) => downloadBase64(d.data, d.filename, d.mime)).catch((e) => toast(e.message, 'error')); }
+function memberImportFile(el) {
+  const file = el.files && el.files[0]; if (!file) return;
+  if (file.size > 3 * 1024 * 1024) { toast('文件不能超过 3MB', 'error'); return; }
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      const data = String(reader.result).split(',').pop();
+      const d = await api('/api/members/import/preview', { body: { filename: file.name, data } });
+      state.memberImport = { data, filename: file.name };
+      const errors = d.errors || [];
+      $('#memberImportResult').innerHTML = `<div class="hint">共 ${d.total} 行，${errors.length ? `<span class="badge badge-red">${errors.length} 行有错误</span>` : '<span class="badge badge-green">校验通过</span>'}</div>${errors.length ? `<div class="table-wrap mt-16"><table><thead><tr><th>行号</th><th>错误</th></tr></thead><tbody>${errors.map((x) => `<tr><td>${x.row}</td><td>${esc(x.message)}</td></tr>`).join('')}</tbody></table></div>` : `<div class="table-wrap mt-16"><table><thead><tr><th>行</th><th>会员</th><th>手机号</th><th>卡项</th><th>处理方式</th></tr></thead><tbody>${(d.preview || []).slice(0, 100).map((x) => `<tr><td>${x.row}</td><td>${esc(x.name)}</td><td>${esc(x.phone || '—')}</td><td>${esc(x.card_name || '—')}</td><td>${esc(x.action)}</td></tr>`).join('')}</tbody></table></div>`}`;
+      $('#memberImportCommit').disabled = !!errors.length;
+    } catch (e) { toast(e.message, 'error'); }
+  };
+  reader.readAsDataURL(file);
+}
+async function commitMemberImport() {
+  if (!state.memberImport) return;
+  const button = $('#memberImportCommit'); if (button) { button.disabled = true; button.textContent = '正在导入…'; }
+  try { const d = await api('/api/members/import/commit', { body: state.memberImport }); toast(d.repeated ? '该文件已经导入过，未重复写入' : `已导入 ${d.members} 名会员、${d.cards} 张卡`); closeModal(); refreshMembers(); }
+  catch (e) { toast(e.message, 'error'); }
+  finally { if ($('#memberImportCommit')) { $('#memberImportCommit').disabled = false; $('#memberImportCommit').textContent = '确认导入'; } }
 }
 
 async function openMemberForm(id) {
@@ -1298,7 +1343,12 @@ function handle(name, el) {
     case 'closeModal': closeModal(); break;
     case 'logout': doLogout(); break;
     case 'memberSearch': memberSearchDebounced(); break;
+    case 'memberImportFile': memberImportFile(el); break;
     case 'openMemberForm': openMemberForm(el.dataset.id); break;
+    case 'openMemberImport': openMemberImport(); break;
+    case 'downloadMemberTemplate': downloadMemberTemplate(); break;
+    case 'downloadMemberCsvTemplate': downloadMemberCsvTemplate(); break;
+    case 'commitMemberImport': commitMemberImport(); break;
     case 'saveMember': saveMember(el); break;
     case 'openMember': openMember(el.dataset.id); break;
     case 'addTag': addTag(el); break;

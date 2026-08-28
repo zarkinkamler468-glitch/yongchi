@@ -20,7 +20,8 @@ function memberByKeyword(kw) {
 }
 
 function cardUsable(c) {
-  if (['void', 'refunded', 'frozen'].includes(c.status)) return { ok: false, reason: '卡状态异常' };
+  if (['void', 'refunded', 'frozen', 'expired'].includes(c.status)) return { ok: false, reason: c.status === 'expired' ? '卡已过期' : '卡状态异常' };
+  if (c.start_at && c.start_at > today()) return { ok: false, reason: '会员卡尚未生效' };
   if (c.card_type !== 'stored' && c.end_at && c.end_at < today()) return { ok: false, reason: '卡已过期' };
   if (c.card_type === 'count' && c.remaining_uses <= 0) return { ok: false, reason: '次数已用尽' };
   return { ok: true };

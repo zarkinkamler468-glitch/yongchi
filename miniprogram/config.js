@@ -3,5 +3,5 @@
 // 真机调试：改成电脑局域网 IP，例如 http://192.168.1.100:3000（手机与电脑同一网络）
 // 正式发布：必须使用已备案的 HTTPS 域名，并在小程序后台「开发管理 → 开发设置 → 服务器域名」配置 request 合法域名
 module.exports = {
-  BASE_URL: 'http://127.0.0.1:3000'
+  BASE_URL: 'https://xiaguyingdi.top'
 };

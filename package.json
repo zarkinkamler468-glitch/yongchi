@@ -17,5 +17,10 @@
     "sqlite"
   ],
   "license": "MIT",
-  "dependencies": {}
+  "dependencies": {
+    "exceljs": "^4.4.0"
+  },
+  "overrides": {
+    "uuid": "11.1.1"
+  }
 }

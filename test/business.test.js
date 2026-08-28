@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { DatabaseSync } = require('node:sqlite');
+const ExcelJS = require('exceljs');
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pms-test-'));
 process.env.PMS_DB_PATH = path.join(testDir, 'pool-test.db');
@@ -24,6 +25,7 @@ const smsSettingsApi = require('../src/api/sms-settings');
 const sms = require('../src/sms');
 const shiftsApi = require('../src/api/shifts');
 const cardsApi = require('../src/api/cards');
+const memberImportApi = require('../src/api/member-import');
 const { createSession, findStaffByToken } = require('../src/auth');
 const { today, addDays, money } = require('../src/util');
 
@@ -49,6 +51,12 @@ function requestRefund(order, amount, applicant = 'frontdesk') {
 
 function approveRefund(refund, approver = 'finance') {
   return orders.refundApprove({ params: { id: refund.id }, body: { refund_method: 'cash' }, req: req(approver) });
+}
+
+async function importFile(rows, filename = '会员导入.csv') {
+  const headers = ['姓名','手机号','会员号','性别','生日','备注','建档日期','卡号','卡项名称','卡种','剩余次数','储值余额','开始日期','结束日期','卡状态','冻结开始','冻结截止'];
+  const csv = '\ufeff' + headers.join(',') + '\n' + rows.map((r) => headers.map((h) => String(r[h] ?? '')).join(',')).join('\n');
+  return { filename, data: Buffer.from(csv).toString('base64') };
 }
 
 test.after(() => {
@@ -475,4 +483,86 @@ test('全额优惠订单允许零元完成且不生成支付流水', () => {
   const order = db.prepare('SELECT * FROM orders WHERE order_no = ?').get(result.body.order_no);
   assert.equal(order.paid_amount, 0);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM payments WHERE order_id = ?').get(order.id).n, 0);
+});
+
+test('会员导入重复提交同一文件不会重复创建会员卡', async () => {
+  const body = await importFile([{ 姓名:'导入幂等会员', 手机号:'13980000001', 卡号:'IMPORT-IDEMPOTENT-001', 卡项名称:'次卡 20 次', 卡种:'count', 剩余次数:8, 建档日期:'2025-01-01', 卡状态:'normal' }]);
+  const first = await memberImportApi.commit({ body, req:req('admin') });
+  const second = await memberImportApi.commit({ body, req:req('admin') });
+  assert.equal(first.status, 200); assert.equal(first.body.repeated, false);
+  assert.equal(second.status, 200); assert.equal(second.body.repeated, true);
+  const member = db.prepare('SELECT * FROM members WHERE phone=?').get('13980000001');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM member_cards WHERE member_id=?').get(member.id).n, 1);
+});
+
+test('会员导入拒绝把同手机号的卡挂到不同姓名会员', async () => {
+  membersApi.create({ body:{name:'原会员姓名',phone:'13980000002'}, req:req('frontdesk') });
+  const body = await importFile([{ 姓名:'错误姓名', 手机号:'13980000002', 卡项名称:'次卡 20 次', 卡种:'count', 剩余次数:8, 卡状态:'normal' }]);
+  const result = await memberImportApi.preview({ body });
+  assert.match(result.body.errors[0].message, /已有会员姓名/);
+});
+
+test('会员导入拒绝卡种与权益错配', async () => {
+  const body = await importFile([{ 姓名:'权益错配', 手机号:'13980000003', 卡项名称:'储值卡', 卡种:'stored', 剩余次数:99, 储值余额:50, 卡状态:'normal' }]);
+  const result = await memberImportApi.preview({ body });
+  assert.match(result.body.errors[0].message, /储值卡不能填写剩余次数/);
+});
+
+test('导入的历史会员不计入经营报表新增会员', async () => {
+  const before = reports.overview({ query:new URLSearchParams({from:today(),to:today()}) }).body.new_members;
+  const body = await importFile([{ 姓名:'历史导入会员', 手机号:'13980000004', 卡项名称:'次卡 20 次', 卡种:'count', 剩余次数:2, 建档日期:'2024-01-01', 卡状态:'normal' }]);
+  const result = await memberImportApi.commit({ body, req:req('admin') });
+  assert.equal(result.status, 200);
+  const after = reports.overview({ query:new URLSearchParams({from:today(),to:today()}) }).body.new_members;
+  assert.equal(after, before);
+});
+
+test('导入状态为过期的卡即使日期异常也不能用于核销', () => {
+  const member = db.prepare('SELECT * FROM members WHERE phone=?').get('13980000004');
+  const card = db.prepare('SELECT * FROM member_cards WHERE member_id=?').get(member.id);
+  db.prepare("UPDATE member_cards SET status='expired', end_at=NULL WHERE id=?").run(card.id);
+  const result = entriesApi.preview({ query:new URLSearchParams({keyword:card.card_no}) });
+  assert.equal(result.status, 400); assert.match(result.body.error, /过期|无有效会员卡/);
+});
+
+test('系统生成的正式 Excel 模板可被导入器正确解析', async () => {
+  const template = await memberImportApi.downloadTemplate({ query:new URLSearchParams() });
+  assert.match(template.body.filename, /\.xlsx$/);
+  const parsed = await memberImportApi.parseFile({ filename:template.body.filename, data:template.body.data });
+  assert.equal(parsed.rows.length, 1); assert.equal(parsed.rows[0].card_type, 'count');
+});
+
+test('会员导入拒绝未来生日、未来开始日期和未来冻结日期', async () => {
+  const future = addDays(today(), 1);
+  for (const row of [
+    { 姓名:'未来生日', 手机号:'13980000005', 生日:future, 卡项名称:'次卡 20 次', 卡种:'count', 剩余次数:1, 卡状态:'normal' },
+    { 姓名:'未来生效', 手机号:'13980000006', 开始日期:future, 卡项名称:'次卡 20 次', 卡种:'count', 剩余次数:1, 卡状态:'normal' },
+    { 姓名:'未来冻结', 手机号:'13980000007', 卡项名称:'次卡 20 次', 卡种:'count', 剩余次数:1, 卡状态:'frozen', 冻结开始:future }
+  ]) {
+    const body = await importFile([row]);
+    const result = await memberImportApi.preview({ body });
+    assert.equal(result.status, 200);
+    assert.equal(result.body.errors.length, 1);
+  }
+});
+
+test('尚未到开始日期的会员卡不能核销', () => {
+  const member = db.prepare('SELECT * FROM members WHERE phone=?').get('13980000004');
+  const card = db.prepare('SELECT * FROM member_cards WHERE member_id=?').get(member.id);
+  db.prepare("UPDATE member_cards SET status='normal', start_at=?, end_at=NULL, remaining_uses=2 WHERE id=?").run(addDays(today(), 1), card.id);
+  const result = entriesApi.preview({ query:new URLSearchParams({keyword:card.card_no}) });
+  assert.equal(result.status, 400);
+  assert.match(result.body.error, /尚未生效|无有效会员卡/);
+});
+
+test('Excel 导入拒绝模板之外的额外列', async () => {
+  const template = await memberImportApi.downloadTemplate({ query:new URLSearchParams() });
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(Buffer.from(template.body.data, 'base64'));
+  wb.worksheets[0].getCell('R1').value = '额外字段';
+  const data = Buffer.from(await wb.xlsx.writeBuffer()).toString('base64');
+  await assert.rejects(
+    memberImportApi.parseFile({ filename:'含额外字段.xlsx', data }),
+    /模板之外的列/
+  );
 });

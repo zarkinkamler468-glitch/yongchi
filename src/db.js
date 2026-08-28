@@ -200,6 +200,15 @@ CREATE TABLE IF NOT EXISTS operation_logs (
   ip          TEXT,
   created_at  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS member_import_batches (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_hash    TEXT UNIQUE NOT NULL,
+  filename     TEXT,
+  row_count    INTEGER NOT NULL DEFAULT 0,
+  imported_by  INTEGER NOT NULL,
+  imported_at  TEXT NOT NULL
+);
 `);
 
 // 旧库补齐微信绑定列
@@ -213,6 +222,7 @@ ensureColumn('orders', 'request_hash', 'request_hash TEXT');
 ensureColumn('payments', 'source_card_id', 'source_card_id INTEGER');
 ensureColumn('entries', 'request_id', 'request_id TEXT');
 ensureColumn('entries', 'request_hash', 'request_hash TEXT');
+ensureColumn('members', 'is_imported', 'is_imported INTEGER NOT NULL DEFAULT 0');
 db.exec('DROP INDEX IF EXISTS idx_orders_request_id;');
 db.exec('DROP INDEX IF EXISTS idx_entries_request_id;');
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_staff_request_id ON orders(staff_id, request_id) WHERE request_id IS NOT NULL;');
