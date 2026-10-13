@@ -3,8 +3,11 @@
 const { db } = require('../db');
 const { now } = require('../util');
 const { ok, fail } = require('../http');
-const { nextMemberNo, normalizePhone } = require('./common');
+const { nextMemberNo, normalizePhone, validateMemberProfile, atomic } = require('./common');
 const audit = require('./audit');
+const { refreshFrozenCard, decorateCard } = require('./cards');
+const { ensureBusinessOpen } = require('./common');
+const { paginate } = require('./pagination');
 
 const STATUSES = ['normal', 'blacklist', 'inactive'];
 
@@ -30,8 +33,9 @@ function list({ query }) {
   }
   const status = query.get('status');
   if (status) { where.push('status = ?'); args.push(status); }
-  const sql = 'SELECT * FROM members' + (where.length ? ' WHERE ' + where.join(' AND ') : '') + ' ORDER BY id DESC LIMIT 1000';
-  const rows = db.prepare(sql).all(...args);
+  const sql = 'SELECT * FROM members' + (where.length ? ' WHERE ' + where.join(' AND ') : '') + ' ORDER BY id DESC';
+  const page = paginate(sql, args, query);
+  const rows = page.list;
   const ids = rows.map((r) => r.id);
   const tagMap = {};
   const cardMap = {};
@@ -42,21 +46,24 @@ function list({ query }) {
     const cardRows = db.prepare(`SELECT member_id, COUNT(*) AS n FROM member_cards WHERE member_id IN (${ph}) GROUP BY member_id`).all(...ids);
     for (const c of cardRows) cardMap[c.member_id] = c.n;
   }
-  return ok({ list: rows.map((m) => decorate(m, tagMap[m.id], cardMap[m.id])), total: rows.length });
+  return ok({ ...page, list: rows.map((m) => decorate(m, tagMap[m.id] || [], cardMap[m.id] || 0)) });
 }
 
 // GET /api/members/:id
-function get({ params }) {
+function get({ params, req }) {
   const m = db.prepare('SELECT * FROM members WHERE id = ?').get(params.id);
   if (!m) return fail(404, '会员不存在');
-  const cards = db.prepare('SELECT mc.*, cp.name AS card_name FROM member_cards mc LEFT JOIN card_products cp ON cp.id = mc.card_product_id WHERE mc.member_id = ? ORDER BY mc.id DESC').all(m.id);
+  const cards = db.prepare('SELECT mc.*, cp.name AS card_name FROM member_cards mc LEFT JOIN card_products cp ON cp.id = mc.card_product_id WHERE mc.member_id = ? ORDER BY mc.id DESC').all(m.id).map(c => decorateCard(refreshFrozenCard(c)));
   const entries = db.prepare('SELECT * FROM entries WHERE member_id = ? ORDER BY id DESC LIMIT 20').all(m.id);
-  const orders = db.prepare('SELECT * FROM orders WHERE member_id = ? ORDER BY id DESC LIMIT 20').all(m.id);
+  const ownOnly = req?.user?.role === 'frontdesk';
+  const orders = db.prepare('SELECT * FROM orders WHERE member_id = ?' + (ownOnly ? ' AND staff_id = ?' : '') + ' ORDER BY id DESC LIMIT 20').all(m.id, ...(ownOnly ? [req.user.id] : []));
   return ok({ member: decorate(m), cards, entries, orders });
 }
 
 // POST /api/members
 function create({ body, req }) {
+  try { validateMemberProfile(body); } catch (e) { return fail(e.status, e.message); }
+  try { ensureBusinessOpen(); } catch (e) { return fail(e.status, e.message); }
   const name = (body.name || '').trim();
   if (!name) return fail(400, '姓名不能为空');
   if (name.length > 50) return fail(400, '姓名不能超过 50 个字');
@@ -78,6 +85,7 @@ function create({ body, req }) {
 
 // PUT /api/members/:id
 function update({ params, body, req }) {
+  try { validateMemberProfile(body); } catch (e) { return fail(e.status, e.message); }
   const m = db.prepare('SELECT * FROM members WHERE id = ?').get(params.id);
   if (!m) return fail(404, '会员不存在');
   const name = (body.name || '').trim();
@@ -125,4 +133,4 @@ function removeTag({ params, req }) {
   return ok({});
 }
 
-module.exports = { list, get, create, update, addTag, removeTag };
+module.exports = { list, get, create: atomic(create), update: atomic(update), addTag: atomic(addTag), removeTag: atomic(removeTag) };

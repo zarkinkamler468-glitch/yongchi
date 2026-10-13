@@ -10,7 +10,7 @@
   </view>
   <view wx:elif="{{mode === 'checkin'}}" class="cashier-checkin">
     <view class="form-head"><view class="back" bindtap="goHome">‹</view><view><view class="page-kicker">快速核销</view><view class="page-title">入场核销</view></view></view>
-    <view class="card"><view class="field"><view class="field-label">卡号 / 手机号 / 会员编号</view><input class="input big" value="{{checkinKeyword}}" data-key="checkinKeyword" bindinput="onCheckinInput" bindconfirm="submitCheckin" placeholder="请输入查询内容" /></view><view class="field"><view class="field-label">同行人数</view><input class="input" type="number" value="{{checkinPeople}}" data-key="checkinPeople" bindinput="onCheckinInput" /></view><button class="btn btn-primary" bindtap="submitCheckin">查询会员</button></view>
+    <view class="card"><view class="field"><view class="field-label">卡号 / 手机号 / 会员编号</view><input class="input big" value="{{checkinKeyword}}" data-key="checkinKeyword" bindinput="onCheckinInput" bindconfirm="submitCheckin" placeholder="请输入查询内容" /></view><view class="field"><view class="field-label">同行人数</view><input class="input" type="number" value="{{checkinPeople}}" data-key="checkinPeople" bindinput="onCheckinInput" /></view><view>月卡、年卡仅限持卡会员本人 1 人使用，核销前请核对本人身份。</view><button class="btn btn-primary" bindtap="submitCheckin">查询会员</button></view>
     <view class="card result-card" wx:if="{{checkinResult}}"><view wx:if="{{checkinResult.ok}}" class="result-ok">{{checkinResult.name}} · {{checkinResult.phone}} · {{checkinResult.card}} · {{checkinResult.asset}}</view><view wx:else class="result-fail">{{checkinResult.error}}</view><button wx:if="{{checkinResult.ok && checkinResult.pending}}" class="btn btn-primary" bindtap="confirmCheckin">确认核销并扣减</button></view>
   </view>
   <block wx:else>
@@ -68,6 +68,14 @@
     </view>
     <view class="total-row"><text>应收金额</text><text class="num">{{payable}}</text></view>
     <view class="field"><view class="field-label">实收金额（默认自动，可改）</view><input class="input big" type="digit" value="{{payAmount}}" bindinput="onAmountInput" /></view>
+    <view class="field"><view class="field-label">混合支付</view><switch checked="{{mixedPay}}" bindchange="toggleMixedPay" /></view>
+    <view wx:if="{{mixedPay}}">
+      <view class="field"><view class="field-label">现金金额</view><input class="input" type="digit" data-key="splitCash" value="{{splitCash}}" bindinput="onInput" /></view>
+      <view class="field"><view class="field-label">微信金额</view><input class="input" type="digit" data-key="splitWechat" value="{{splitWechat}}" bindinput="onInput" /></view>
+      <view class="field"><view class="field-label">支付宝金额</view><input class="input" type="digit" data-key="splitAlipay" value="{{splitAlipay}}" bindinput="onInput" /></view>
+      <view class="field"><view class="field-label">储值金额</view><input class="input" type="digit" data-key="splitStored" value="{{splitStored}}" bindinput="onInput" /></view>
+    </view>
+    <view class="field" wx:if="{{storedCards.length}}"><view class="field-label">储值支付来源</view><picker range="{{storedCards}}" range-key="label" value="{{storedCardIndex}}" bindchange="pickStoredCard"><view class="picker">{{storedCards[storedCardIndex].label}}</view></picker></view>
     <button class="btn btn-primary" bindtap="submit">确认收款</button>
   </view>
   </block>

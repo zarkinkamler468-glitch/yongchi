@@ -14,11 +14,29 @@ const fmtMoney = (n) => '¥' + Number(n || 0).toLocaleString('zh-CN', { maximumF
 const fmtNum = (n) => Number(n || 0).toLocaleString('zh-CN');
 const money2 = (n) => Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100;
 const requestId = (prefix) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+function pendingRequest(scope, body) {
+  const signature = JSON.stringify(body);
+  const pending = state[scope + 'Pending'];
+  if (pending && pending.signature !== signature) throw new Error('上一笔结果尚未确认，请恢复原参数重试后再办理新业务');
+  if (pending) return pending.body;
+  const payload = { ...body, request_id: state[scope + 'RequestId'] || requestId(scope) };
+  state[scope + 'RequestId'] = payload.request_id;
+  state[scope + 'Pending'] = { signature, body: payload };
+  return payload;
+}
+function clearPending(scope, error) {
+  if (!error || (error.status >= 400 && error.status < 500)) {
+    state[scope + 'Pending'] = null; state[scope + 'RequestId'] = null;
+  }
+}
 
 function debounce(fn, ms = 200) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
 function getToken() { return localStorage.getItem('pms_token') || ''; }
-function setToken(t) { t ? localStorage.setItem('pms_token', t) : localStorage.removeItem('pms_token'); }
+function setToken(t) {
+  if (getToken() !== t) { clearPending('cashier'); clearPending('checkin'); }
+  t ? localStorage.setItem('pms_token', t) : localStorage.removeItem('pms_token');
+}
 
 async function api(path, opts = {}) {
   const method = opts.method || (opts.body !== undefined ? 'POST' : 'GET');
@@ -33,7 +51,14 @@ async function api(path, opts = {}) {
     setToken(''); state.user = null; showLogin();
     throw new Error(data.error || '未登录或登录已过期');
   }
-  if (!res.ok) throw new Error(data.error || `请求失败 (${res.status})`);
+  if (!res.ok) throw Object.assign(new Error(data.error || `请求失败 (${res.status})`), { status: res.status });
+  if (method === 'GET' && !/[?&]page=/.test(path) && Array.isArray(data.list) && data.has_more) {
+    let page = data.page;
+    while (data.has_more) {
+      const next = await api(path + (path.includes('?') ? '&' : '?') + 'page=' + (++page), opts);
+      data.list.push(...next.list); data.has_more = next.has_more;
+    }
+  }
   return data;
 }
 
@@ -592,18 +617,35 @@ function renderCheckin() {
         <div class="field"><label>通道号</label><input class="input" id="ckGate" value="前台"></div>
       </div>
       <div class="form-row">
-        <div class="field"><label>同行人数（带朋友，次卡按人头扣次）</label><input class="input" type="number" id="ckPeople" value="1"></div>
+        <div class="field"><label>入场人数（次卡、储值卡按人头扣费）</label><input class="input" type="number" id="ckPeople" value="1" min="1" max="100" step="1"><div>月卡、年卡仅限持卡会员本人 1 人使用，核销前请核对本人身份。</div></div>
         <div class="field"><label>&nbsp;</label><button class="btn btn-primary btn-block" data-action="doCheckin">核销入场</button></div>
       </div>
     </div>
     <div class="card"><div class="card-title">会员核对</div><div id="ckResult"><span class="text-muted">输入关键词后点击查询，核对会员信息后再确认扣减</span></div></div>`;
   $('#ckKeyword').addEventListener('keydown', (e) => { if (e.key === 'Enter') doCheckin(); });
+  state.checkinPreview = null;
+  ['#ckKeyword', '#ckPeople', '#ckGate'].forEach(s => $(s).addEventListener('input', () => {
+    state.checkinPreview = null; state.checkinPreviewVersion = (state.checkinPreviewVersion || 0) + 1;
+    $('#ckResult').textContent = '查询条件已改变，请重新查询并确认';
+  }));
 }
 async function doCheckin() {
+  if (state.checkinSubmitting) return;
+  if (state.checkinPending) {
+    const { request_id, confirmed, ...snapshot } = state.checkinPending.body;
+    state.checkinPreview = snapshot;
+    toast('正在重试确认上一笔核销结果');
+    return confirmCheckin({ disabled: false });
+  }
+  const version = state.checkinPreviewVersion = (state.checkinPreviewVersion || 0) + 1;
+  state.checkinPreview = null;
+  $('#ckResult').textContent = '查询中…';
   const body = { keyword: $('#ckKeyword').value, gate_no: $('#ckGate').value, people: Number($('#ckPeople').value) || 1 };
   try {
     const d = await api('/api/entries/preview?keyword=' + encodeURIComponent(body.keyword) + '&people=' + body.people);
+    if (version !== state.checkinPreviewVersion) return;
     const c = d.card;
+    state.checkinPreview = { ...body, people: c.people, card_id: c.id };
     $('#ckResult').innerHTML = `<div class="flex-between mb-16">
       <div><h2 style="margin:0">${esc(d.member.name)}</h2><span class="text-muted">${esc(d.member.member_no)} · ${esc(d.member.phone || '')}</span></div>
       <span class="badge badge-blue">待确认</span></div>
@@ -615,15 +657,17 @@ async function doCheckin() {
       </div><div class="mt-16"><button class="btn btn-primary" data-action="confirmCheckin" data-keyword="${esc(body.keyword)}" data-card="${c.id}">确认核销并扣减</button></div>`;
     state.checkinRequestId = requestId('checkin');
     toast('请核对会员信息');
-  } catch (e) { $('#ckResult').innerHTML = `<span class="badge badge-red">${esc(e.message)}</span>`; }
+  } catch (e) { if (version === state.checkinPreviewVersion) { state.checkinPreview = null; $('#ckResult').innerHTML = `<span class="badge badge-red">${esc(e.message)}</span>`; } }
 }
 async function confirmCheckin(el) {
-  if (state.checkinSubmitting) return;
+  if (state.checkinSubmitting || !state.checkinPreview) return;
+  const snapshot = { ...state.checkinPreview };
   state.checkinSubmitting = true; el.disabled = true;
   try {
-    await api('/api/entries/checkin', { body: { keyword: el.dataset.keyword, card_id: Number(el.dataset.card), gate_no: $('#ckGate').value, people: Number($('#ckPeople').value) || 1, confirmed: true, request_id: state.checkinRequestId || requestId('checkin') } });
-    state.checkinRequestId = null; $('#ckResult').innerHTML = '<span class="badge badge-green">核销成功，权益已扣减</span>'; toast('核销成功');
-  } catch (e) { toast(e.message, 'error'); el.disabled = false; }
+    await api('/api/entries/checkin', { body: pendingRequest('checkin', { ...snapshot, confirmed: true }) });
+    clearPending('checkin');
+    state.checkinPreview = null; state.checkinRequestId = null; $('#ckResult').innerHTML = '<span class="badge badge-green">核销成功，权益已扣减</span>'; toast('核销成功');
+  } catch (e) { clearPending('checkin', e); toast(e.message, 'error'); el.disabled = false; }
   finally { state.checkinSubmitting = false; }
 }
 
@@ -649,6 +693,7 @@ async function renderCashierForm(tab) {
   state.cashierNewMember = tab === 'open';
   if (!state.payMethod) state.payMethod = 'cash';
   state.payManual = false;
+  state.storedPaymentCards = [];
   $$('.sale-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
   const wrap = $('#cashierForm');
   const products = (await api('/api/card-products')).list.filter((p) => p.enabled);
@@ -667,7 +712,7 @@ async function renderCashierForm(tab) {
           <div class="field"><label>性别</label><select class="select" id="csGender"><option value="unknown">未知</option><option value="male">男</option><option value="female">女</option></select></div>
         </div>
         ${tab === 'open' ? `<div class="field"><label>选择卡项</label><select class="select" id="csProduct" data-change="cashierAmount">${products.map((p) => `<option value="${p.id}">${esc(p.name)} · ${fmtMoney(p.price)}</option>`).join('')}</select></div>` : ''}
-        ${tab === 'renew' ? `<div class="field"><label>选择会员卡</label><select class="select" id="csCard"></select></div><div class="field"><label>选择续费卡项（同卡种）</label><select class="select" id="csProduct" data-change="cashierAmount">${products.map((p) => `<option value="${p.id}">${esc(p.name)} · ${fmtMoney(p.price)}</option>`).join('')}</select></div>` : ''}
+        ${tab === 'renew' ? `<div class="field"><label>选择会员卡</label><select class="select" id="csCard" data-change="cashierRenewCard"></select></div><div class="field"><label>选择续费卡项（同卡种）</label><select class="select" id="csProduct" data-change="cashierAmount"></select></div>` : ''}
         ${tab === 'recharge' ? `<div class="field"><label>选择储值卡</label><select class="select" id="csCard"></select></div><div class="field"><label>充值金额（元）</label><input class="input" type="number" step="0.01" id="csAmount" value="100" data-input="cashierAmount"></div>` : ''}
         <div class="field"><label>优惠金额（元）</label><input class="input" type="number" step="0.01" id="csDiscount" value="0" data-input="cashierAmount"></div>
       </div>
@@ -678,10 +723,14 @@ async function renderCashierForm(tab) {
             <button class="pos-pay ${state.payMethod === 'cash' ? 'active' : ''}" data-action="pickPayMethod" data-pay="cash">现金</button>
             <button class="pos-pay ${state.payMethod === 'wechat' ? 'active' : ''}" data-action="pickPayMethod" data-pay="wechat">微信</button>
             <button class="pos-pay ${state.payMethod === 'alipay' ? 'active' : ''}" data-action="pickPayMethod" data-pay="alipay">支付宝</button>
+            <button class="pos-pay ${state.payMethod === 'stored' ? 'active' : ''}" data-action="pickPayMethod" data-pay="stored">储值</button>
           </div>
         </div>
         <div class="flex-between"><span class="text-muted">应收金额（自动）</span><b class="num" id="csPayable" style="font-size:22px">¥0</b></div>
         <div class="field mt-16"><label>实收金额（默认自动，可手动修改）</label><input class="input" type="number" step="0.01" id="csPayAmount" data-input="cashierAmountManual" style="font-size:22px;font-weight:700"></div>
+        <div class="field"><label><input type="checkbox" id="csMixed" data-change="toggleMixedPay"> 混合支付</label></div>
+        <div id="csMixedRows" hidden>${['cash', 'wechat', 'alipay', 'stored'].map(method => `<div class="field"><label>${PAY_LABEL[method]}金额（不用填 0）</label><input class="input cs-split" data-method="${method}" type="number" min="0" step="0.01" value="0"></div>`).join('')}</div>
+        <div class="field"><label>储值支付来源</label><select class="select" id="csStoredSource"><option value="">自动选择可用储值卡</option></select></div>
         <button class="btn btn-primary btn-block mt-16" data-action="submitCashier">确认收款</button>
       </div>
     </div>`;
@@ -707,6 +756,14 @@ function pickPayMethod(el) {
   state.payMethod = el.dataset.pay;
   $$('#view-cashier .pos-pay').forEach((b) => b.classList.toggle('active', b.dataset.pay === state.payMethod));
 }
+function toggleMixedPay() { $('#csMixedRows').hidden = !$('#csMixed').checked; }
+async function loadStoredPaymentCards(memberId) {
+  const d = await api('/api/member-cards?member_id=' + memberId);
+  if (Number(state.cashierMember?.id) !== Number(memberId)) return;
+  state.storedPaymentCards = d.list.filter(c => c.card_type === 'stored' && c.status === 'normal' && (!c.start_at || c.start_at <= todayStr()));
+  const sel = $('#csStoredSource');
+  if (sel) sel.innerHTML = '<option value="">自动选择可用储值卡</option>' + state.storedPaymentCards.map(c => `<option value="${c.id}">${esc(c.card_no)} · ${fmtMoney(c.balance)}</option>`).join('');
+}
 
 function cashierMemberPick() {
   const nm = $('#csNewMember');
@@ -724,11 +781,19 @@ async function searchCashierMembers() {
   if (!q) { result.innerHTML = ''; return; }
   try {
     const d = await api('/api/members?status=normal&search=' + encodeURIComponent(q));
+    if ($('#csMemberSearch') !== null && $('#csMemberSearch').value.trim() !== q) return;
     state.members = d.list;
     result.innerHTML = d.list.slice(0, 20).map((m) => `<button class="search-result" data-action="cashierPickMember" data-id="${m.id}">${esc(m.name)} <span>${esc(m.member_no)} · ${esc(m.phone || '')}</span></button>`).join('') || '<div class="text-muted mt-8">未找到匹配会员</div>';
-  } catch (e) { result.innerHTML = `<div class="text-danger mt-8">${esc(e.message)}</div>`; }
+  } catch (e) { if ($('#csMemberSearch')?.value.trim() === q) result.innerHTML = `<div class="text-danger mt-8">${esc(e.message)}</div>`; }
 }
-function cashierMemberSearch() { cashierMemberSearchDebounced(); }
+function cashierMemberSearch() {
+  state.cashierMember = null; state.members = []; state.storedPaymentCards = [];
+  if ($('#csCard')) $('#csCard').innerHTML = '<option value="">请先选择会员</option>';
+  if ($('#csStoredSource')) $('#csStoredSource').innerHTML = '<option value="">自动选择可用储值卡</option>';
+  if ($('#csMemberSelected')) $('#csMemberSelected').textContent = '';
+  if ($('#csMemberResults')) $('#csMemberResults').innerHTML = '';
+  cashierMemberSearchDebounced();
+}
 function cashierPickMember(el) {
   const m = (state.members || []).find((x) => Number(x.id) === Number(el.dataset.id));
   // 搜索结果未缓存时，直接从按钮文本外的接口数据重新读取，避免依赖全量会员列表。
@@ -739,11 +804,13 @@ function cashierPickMember(el) {
   $('#csMemberResults').innerHTML = '';
   $('#csMemberSelected').textContent = `已选择：${m.name}（${m.member_no}）`;
   cashierMemberPick();
+  loadStoredPaymentCards(m.id).catch(e => toast(e.message, 'error'));
   if (['renew', 'recharge'].includes(state.cashierTab)) loadMemberCards(m.id);
 }
 function cashierNewMember() {
   state.cashierMember = null;
   state.cashierNewMember = true;
+  if ($('#csStoredSource')) $('#csStoredSource').innerHTML = '<option value="">自动选择可用储值卡</option>';
   if ($('#csMemberSearch')) $('#csMemberSearch').value = '';
   if ($('#csMemberResults')) $('#csMemberResults').innerHTML = '';
   if ($('#csMemberSelected')) $('#csMemberSelected').textContent = '将创建新会员';
@@ -752,19 +819,33 @@ function cashierNewMember() {
 function cashierExistingMember() {
   state.cashierMember = null;
   state.cashierNewMember = false;
+  if ($('#csStoredSource')) $('#csStoredSource').innerHTML = '<option value="">自动选择可用储值卡</option>';
   cashierMemberPick();
   $('#csMemberSearch')?.focus();
 }
 async function loadMemberCards(memberId) {
+  const tab = state.cashierTab;
+  const version = state.cardLoadVersion = (state.cardLoadVersion || 0) + 1;
+  if ($('#csCard')) $('#csCard').innerHTML = '<option value="">正在加载会员卡</option>';
   const d = await api('/api/member-cards?member_id=' + memberId);
+  if (version !== state.cardLoadVersion || Number(state.cashierMember?.id) !== Number(memberId) || state.cashierTab !== tab) return;
   const type = state.cashierTab === 'renew' ? '' : 'stored';
   const cards = type ? d.list.filter((c) => c.card_type === type) : d.list;
   const sel = $('#csCard');
   if (sel) sel.innerHTML = cards.map((c) => {
     const status = c.status === 'void' ? '已作废' : c.status === 'refunded' ? '已退款' : c.status === 'frozen' ? '已冻结' : c.card_type === 'stored' ? fmtMoney(c.balance) : c.remaining_uses + '次';
-    const disabled = ['void', 'refunded'].includes(c.status) ? ' disabled' : '';
+    const disabled = ['void', 'refunded', 'frozen'].includes(c.status) ? ' disabled' : '';
     return `<option value="${c.id}"${disabled}>${esc(c.card_no)} · ${esc(c.card_name || '')} · ${status}</option>`;
   }).join('') || '<option value="">无可用卡</option>';
+  state.cashierCards = cards;
+  cashierRenewCard();
+}
+function cashierRenewCard() {
+  if (state.cashierTab !== 'renew') return;
+  const card = (state.cashierCards || []).find(c => String(c.id) === $('#csCard')?.value);
+  const products = card ? (state.products || []).filter(p => p.type === card.card_type) : [];
+  if ($('#csProduct')) $('#csProduct').innerHTML = products.map(p => `<option value="${p.id}">${esc(p.name)} · ${fmtMoney(p.price)}</option>`).join('') || '<option value="">无同卡种续费卡项</option>';
+  updateCashierTotal();
 }
 function updateCashierTotal() {
   const payable = cashierPayable();
@@ -778,6 +859,14 @@ async function submitCashier() {
   const memberId = state.cashierMember?.id || '';
   const payable = cashierToPay();
   if (!Number.isFinite(payable) || payable < 0) { toast('实收金额不能为负数'); return; }
+  let payments = payable > 0 ? [{ pay_method: state.payMethod || 'cash', amount: payable }] : [];
+  if ($('#csMixed').checked) {
+    payments = $$('.cs-split').map(input => ({ pay_method: input.dataset.method, amount: Number(input.value) }));
+    if (payments.some(p => !Number.isFinite(p.amount) || p.amount < 0)) { toast('拆分金额必须为非负数'); return; }
+    payments = payments.filter(p => p.amount > 0);
+  }
+  if (payments.reduce((n, p) => n + Math.round(p.amount * 100), 0) !== Math.round(cashierPayable() * 100)) { toast('支付合计必须等于应收金额'); return; }
+  payments.forEach(p => { if (p.pay_method === 'stored' && $('#csStoredSource').value) p.source_card_id = Number($('#csStoredSource').value); });
   if (tab === 'open' && !memberId && !($('#csName')?.value || '').trim()) { toast('请选择已有会员或填写新会员姓名'); return; }
   if (['renew', 'recharge'].includes(tab) && !memberId) { toast('请先查询并选择会员'); return; }
   const body = {
@@ -787,17 +876,16 @@ async function submitCashier() {
     card_product_id: $('#csProduct')?.value ? Number($('#csProduct').value) : undefined,
     member_card_id: $('#csCard')?.value ? Number($('#csCard').value) : undefined,
     discount_amount: Number($('#csDiscount')?.value) || 0,
-    payments: payable > 0 ? [{ pay_method: state.payMethod || 'cash', amount: payable }] : []
+    payments
   };
-  body.request_id = state.cashierRequestId || (state.cashierRequestId = requestId('cashier'));
   if (tab === 'recharge') body.amount = Number($('#csAmount')?.value);
   try {
     state.cashierSubmitting = true;
-    const d = await api('/api/orders', { body });
-    state.cashierRequestId = null;
+    const d = await api('/api/orders', { body: pendingRequest('cashier', body) });
+    clearPending('cashier');
     toast(`收款成功：${fmtMoney(d.amount)}`);
     renderCashierForm(tab);
-  } catch (e) { toast(e.message, 'error'); }
+  } catch (e) { clearPending('cashier', e); toast(e.message, 'error'); }
   finally { state.cashierSubmitting = false; }
 }
 
@@ -839,7 +927,7 @@ async function refreshOrders() {
   $('#ordersBody').innerHTML = d.list.map((o) => `<tr>
     <td class="num">${esc(o.order_no)}</td><td>${orderTypeBadge(o.order_type)}</td><td>${orderStatusBadge(o.status)}</td>
     <td>${esc(o.member_name)}</td><td class="num">${esc(o.card_no || '—')}</td>
-     <td class="num">${fmtMoney(o.total_amount)}</td><td class="num">${fmtMoney(o.discount_amount)}</td><td class="num"><b>${fmtMoney(o.order_type === 'refund' ? -o.total_amount : o.paid_amount)}</b></td>
+     <td class="num">${fmtMoney(o.total_amount)}</td><td class="num">${fmtMoney(o.discount_amount)}</td><td class="num"><b>${fmtMoney(o.order_type === 'refund' ? (o.status === 'paid' ? -o.total_amount : 0) : o.paid_amount)}</b></td>
     <td>${esc(o.staff_name)}</td><td class="num">${esc((o.business_at || o.created_at || '').replace('T', ' ').slice(0, 16))}</td>
     <td class="ops"><button class="btn btn-sm btn-outline" data-action="openOrder" data-id="${o.id}">详情</button>
     ${['open', 'renew', 'recharge'].includes(o.order_type) && ['paid', 'partial_refund'].includes(o.status) ? `<button class="btn btn-sm btn-danger" data-action="refundApply" data-id="${o.id}">退款</button>` : ''}</td>
@@ -854,7 +942,7 @@ async function openOrder(id) {
       <div class="grid cols-4 mb-16">
         <div class="card stat"><span class="stat-label">原价</span><span class="stat-value num">${fmtMoney(o.total_amount)}</span></div>
         <div class="card stat"><span class="stat-label">优惠</span><span class="stat-value num">${fmtMoney(o.discount_amount)}</span></div>
-        <div class="card stat"><span class="stat-label">实付</span><span class="stat-value num">${fmtMoney(o.paid_amount)}</span></div>
+        <div class="card stat"><span class="stat-label">实付</span><span class="stat-value num">${fmtMoney(o.order_type === 'refund' ? (o.status === 'paid' ? -o.total_amount : 0) : o.paid_amount)}</span></div>
         <div class="card stat"><span class="stat-label">状态</span><span class="stat-value num">${ORDER_STATUS_LABEL[o.status]}</span></div>
       </div>
       <div class="card-title">支付记录</div>
@@ -1034,7 +1122,7 @@ async function refreshClosings() {
   $('#closingsBody').innerHTML = d.list.map((c) => `<tr>
     <td class="num">${esc(c.business_date)}</td><td class="num">${fmtMoney(c.total_income)}</td><td class="num">${fmtMoney(c.total_refund)}</td>
     <td class="num">${c.total_entries}</td><td class="num">${c.new_members}</td><td>${esc(c.closed_by_name || '')}</td>
-    <td>${c.status === 'adjusted' ? '<span class="badge badge-amber">已调整</span>' : '<span class="badge badge-green">已日结</span>'}</td>
+    <td>${c.status === 'reopened' ? '<span class="badge badge-amber">已重开，待日结</span>' : c.status === 'adjusted' ? '<span class="badge badge-amber">已调整</span>' : '<span class="badge badge-green">已日结</span>'}</td>
     <td><button class="btn btn-sm btn-outline" data-action="openClosing" data-date="${esc(c.business_date)}">详情</button></td>
   </tr>`).join('') || '<tr><td colspan="8" class="empty">暂无日结</td></tr>';
 }
@@ -1049,8 +1137,14 @@ async function openClosing(el) {
       <div class="card stat"><span class="stat-label">退款</span><span class="stat-value num">${fmtMoney(c.total_refund)}</span></div>
       <div class="card stat"><span class="stat-label">入场</span><span class="stat-value num">${c.total_entries}</span></div>
       <div class="card stat"><span class="stat-label">新会员</span><span class="stat-value num">${c.new_members}</span></div>
-    </div></div>
+    </div>${d.closing && c.status !== 'reopened' && ['boss', 'admin'].includes(state.user?.role) ? `<div class="field mt-16"><label>重开营业日原因</label><input class="input" id="clReopenReason"><button class="btn btn-outline mt-8" data-action="reopenClosing" data-date="${esc(el.dataset.date)}">重开营业日</button></div>` : ''}</div>
     <div class="modal-foot"><button class="btn" data-action="closeModal">关闭</button></div>`);
+}
+async function reopenClosing(el) {
+  if (el.disabled) return;
+  el.disabled = true;
+  try { await api('/api/closings/' + el.dataset.date + '/reopen', { body: { reason: $('#clReopenReason').value } }); closeModal(); toast('营业日已重开，业务结束后请重新日结'); refreshClosings(); }
+  catch (e) { el.disabled = false; toast(e.message, 'error'); }
 }
 
 /* ============================= 报表中心 ============================= */
@@ -1400,6 +1494,9 @@ function handle(name, el) {
     case 'openShift': openShift(el.dataset.id); break;
     case 'doClosing': doClosing(); break;
     case 'openClosing': openClosing(el); break;
+    case 'reopenClosing': reopenClosing(el); break;
+    case 'toggleMixedPay': toggleMixedPay(); break;
+    case 'cashierRenewCard': cashierRenewCard(); break;
     case 'refreshReports': refreshReports(); break;
     case 'exportMembers': exportMembers(); break;
     case 'exportOrders2': exportOrders2(); break;

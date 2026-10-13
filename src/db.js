@@ -216,12 +216,18 @@ ensureColumn('staff', 'wx_openid', 'wx_openid TEXT');
 ensureColumn('orders', 'benefit_uses', 'benefit_uses INTEGER NOT NULL DEFAULT 0');
 ensureColumn('orders', 'benefit_amount', 'benefit_amount REAL NOT NULL DEFAULT 0');
 ensureColumn('orders', 'benefit_days', 'benefit_days INTEGER NOT NULL DEFAULT 0');
+ensureColumn('orders', 'benefit_snapshot_known', 'benefit_snapshot_known INTEGER NOT NULL DEFAULT 0');
 ensureColumn('orders', 'approved_at', 'approved_at TEXT');
 ensureColumn('orders', 'request_id', 'request_id TEXT');
 ensureColumn('orders', 'request_hash', 'request_hash TEXT');
 ensureColumn('payments', 'source_card_id', 'source_card_id INTEGER');
 ensureColumn('entries', 'request_id', 'request_id TEXT');
 ensureColumn('entries', 'request_hash', 'request_hash TEXT');
+ensureColumn('entries', 'people', 'people INTEGER NOT NULL DEFAULT 1');
+// 旧记录只有次卡扣次可可靠还原人数；期限/储值卡保持 1，不猜测历史费率。
+if (!db.prepare("SELECT 1 FROM settings WHERE key='migration_entry_people_v1'").get()) {
+  db.exec("BEGIN IMMEDIATE; UPDATE entries SET people=deducted_uses WHERE result='success' AND charge_type='count' AND deducted_uses>0; INSERT INTO settings(key,value) VALUES('migration_entry_people_v1','1'); COMMIT;");
+}
 ensureColumn('members', 'is_imported', 'is_imported INTEGER NOT NULL DEFAULT 0');
 db.exec('DROP INDEX IF EXISTS idx_orders_request_id;');
 db.exec('DROP INDEX IF EXISTS idx_entries_request_id;');
@@ -235,20 +241,17 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_orders_original ON orders(original_order
 db.exec('CREATE INDEX IF NOT EXISTS idx_payments_order_paid_at ON payments(order_id, paid_at);');
 db.exec('CREATE INDEX IF NOT EXISTS idx_entries_member_entry_at ON entries(member_id, entry_at);');
 
-// 兼容旧订单：新增退款权益快照字段后，为仍未发生退款的历史订单尽可能回填卡项权益。
-// 已经产生部分退款的订单不强行重算，避免改变既有账务结果。
-db.exec(`
-  UPDATE orders SET benefit_uses = COALESCE((SELECT cp.total_uses FROM card_products cp JOIN member_cards mc ON mc.card_product_id = cp.id WHERE mc.id = orders.member_card_id), 0)
-  WHERE benefit_uses = 0 AND order_type IN ('open','renew') AND member_card_id IS NOT NULL
-    AND NOT EXISTS (SELECT 1 FROM orders r WHERE r.original_order_id = orders.id AND r.order_type = 'refund');
-  UPDATE orders SET benefit_amount = CASE
-    WHEN order_type = 'recharge' THEN paid_amount
-    ELSE COALESCE((SELECT cp.stored_value FROM card_products cp JOIN member_cards mc ON mc.card_product_id = cp.id WHERE mc.id = orders.member_card_id), 0)
-  END
-  WHERE benefit_amount = 0 AND member_card_id IS NOT NULL AND order_type IN ('open','renew','recharge')
-    AND EXISTS (SELECT 1 FROM member_cards mc WHERE mc.id = orders.member_card_id AND mc.card_type = 'stored')
-    AND NOT EXISTS (SELECT 1 FROM orders r WHERE r.original_order_id = orders.id AND r.order_type = 'refund');
-`);
+// 不再根据当前卡项猜测历史授予权益。缺失快照的历史退款交由人工核算。
+// 兼容现有库的约束使用触发器，不重建或覆盖业务表。
+for (const [table, predicate] of [
+  ['member_cards', "NEW.balance < 0 OR NEW.balance > 1000000000 OR NEW.remaining_uses < 0"],
+  ['payments', 'ABS(NEW.amount) > 1000000000'],
+  ['orders', 'NEW.total_amount < 0 OR NEW.total_amount > 1000000000 OR NEW.paid_amount < 0 OR NEW.paid_amount > 1000000000']
+]) {
+  for (const event of ['INSERT', 'UPDATE']) {
+    db.exec(`CREATE TRIGGER IF NOT EXISTS guard_${table}_${event.toLowerCase()} BEFORE ${event} ON ${table} WHEN ${predicate} BEGIN SELECT RAISE(ABORT, '金额或权益超出安全范围'); END;`);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // 默认设置
@@ -359,9 +362,11 @@ function ensureAdmin() {
   const has = db.prepare("SELECT id FROM staff WHERE role = 'admin'").get();
   if (has) return;
   const taken = db.prepare('SELECT id FROM staff WHERE username = ?').get('admin');
-  if (taken) return;
+  if (taken) throw new Error('旧库缺少超管且 admin 用户名已占用，请由维护人员处理账号后重新启动');
+  const password = String(process.env.PMS_INITIAL_ADMIN_PASSWORD || '');
+  if (password.length < 8) throw new Error('旧库缺少超管，请设置至少 8 位的 PMS_INITIAL_ADMIN_PASSWORD 后重新启动');
   db.prepare('INSERT INTO staff(username, password_hash, real_name, role, status, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .run('admin', hashPassword(initialPassword('PMS_INITIAL_ADMIN_PASSWORD', '超管账号')), '超管', 'admin', 'active', now());
+    .run('admin', hashPassword(password), '超管', 'admin', 'active', now());
 }
 
 initSettings();

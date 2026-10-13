@@ -30,25 +30,48 @@ function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
+    let tooLarge = false;
     req.on('data', (c) => {
+      if (tooLarge) return;
       size += c.length;
       if (size > 5 * 1024 * 1024) {
-        reject(new Error('请求体过大'));
-        req.destroy();
+        tooLarge = true;
+        chunks.length = 0;
+        reject(httpError(413, '请求体过大'));
         return;
       }
       chunks.push(c);
     });
     req.on('end', () => {
+      if (tooLarge) return;
       if (chunks.length === 0) return resolve({});
       try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        validateBody(body);
+        resolve(body);
       } catch (e) {
-        reject(new Error('JSON 解析失败'));
+        reject(e.status ? e : httpError(400, 'JSON 解析失败'));
       }
     });
     req.on('error', reject);
+    req.on('aborted', () => reject(httpError(400, '请求已中断')));
   });
+}
+
+// 在业务写入前拒绝异常结构，避免 .trim/.slice 等抛错后留下部分变更。
+function validateBody(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw httpError(400, '请求体必须是 JSON 对象');
+  const textFields = ['name', 'real_name', 'username', 'password', 'phone', 'gender', 'birthday', 'note', 'reason', 'status', 'type', 'order_type', 'keyword', 'request_id', 'gate_no', 'frozen_until', 'business_date', 'refund_method', 'tag_name', 'filename', 'data', 'code', 'bind_token', 'captcha_token', 'captcha_code'];
+  for (const key of textFields) {
+    if (body[key] !== undefined && body[key] !== null && typeof body[key] !== 'string') throw httpError(400, `${key} 必须为文本`);
+  }
+  if (body.payments !== undefined) {
+    if (!Array.isArray(body.payments) || body.payments.length > 100) throw httpError(400, '支付明细必须为不超过 100 笔的数组');
+    for (const payment of body.payments) {
+      if (!payment || typeof payment !== 'object' || Array.isArray(payment)) throw httpError(400, '支付明细格式无效');
+      if (typeof payment.pay_method !== 'string' || (payment.transaction_no != null && typeof payment.transaction_no !== 'string')) throw httpError(400, '支付方式或交易编号格式无效');
+    }
+  }
 }
 
 // 极简路由：/api/members/:id 形式，路径参数按顺序捕获
@@ -75,7 +98,7 @@ function makeRouter(opts = {}) {
       try {
         body = await readBody(req);
       } catch (e) {
-        sendJSON(res, 400, { error: e.message });
+        sendJSON(res, e.status || 400, { error: e.message });
         return true;
       }
     }
@@ -98,22 +121,33 @@ function makeRouter(opts = {}) {
       }
 
       let result;
+      let audited = false;
+      const auditWrite = opts.audit && r.audit !== false && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
+      const writeAudit = () => opts.audit({ req, action: r.action || `${method} ${r.path}`, target_type: r.module || 'system', target_id: params.id ? Number(params.id) : undefined });
       try {
-        result = await r.handler({ req, res, params, query: u.searchParams, body: body || {} });
+        const args = { req, res, params, query: u.searchParams, body: body || {} };
+        if (auditWrite && opts.atomic && r.handler.constructor.name !== 'AsyncFunction') {
+          result = opts.atomic(input => {
+            const value = r.handler(input);
+            if (value && value.status < 400) writeAudit();
+            return value;
+          })(args);
+          audited = true;
+        } else result = await r.handler(args);
       } catch (e) {
-        result = (e && e.status) ? fail(e.status, e.message) : fail(500, e.message || '服务器错误');
+        result = (e && e.status) ? fail(e.status, e.message) : fail(500, '服务器错误');
       }
       if (result && typeof result === 'object' && 'status' in result) {
         sendJSON(res, result.status, result.body);
       }
       // 成功的写操作写审计日志（最小化：只记 动作/对象/操作人；audit:false 的路由由处理器自行记录）
-      if (opts.audit && r.audit !== false && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && result && result.status < 400) {
-        opts.audit({
+      if (auditWrite && !audited && result && result.status < 400) {
+        try { opts.audit({
           req,
           action: r.action || `${method} ${r.path}`,
           target_type: r.module || 'system',
           target_id: params && params.id ? Number(params.id) : undefined
-        });
+        }); } catch (_) { console.error('[审计] 操作日志写入失败，请检查数据库状态'); }
       }
       return true;
     }

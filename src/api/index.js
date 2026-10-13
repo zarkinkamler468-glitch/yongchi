@@ -14,6 +14,7 @@ const staff = require('./staff');
 const smsSettings = require('./sms-settings');
 const audit = require('./audit');
 const memberImport = require('./member-import');
+const { atomic } = require('./common');
 
 // 角色：boss 老板 / frontdesk 前台 / finance 财务
 const BOSS = ['boss'];
@@ -22,7 +23,7 @@ const ALL = ['boss', 'frontdesk', 'finance'];
 const FRONT = ['boss', 'frontdesk'];
 
 function buildRouter() {
-  const r = makeRouter({ audit: audit.record });
+  const r = makeRouter({ audit: audit.record, atomic });
   const get = (p, h, o = {}) => r.add('GET', p, h, o);
   const post = (p, h, o = {}) => r.add('POST', p, h, o);
   const put = (p, h, o = {}) => r.add('PUT', p, h, o);
@@ -90,6 +91,7 @@ function buildRouter() {
   get('/api/closings', closings.list, { roles: BOSS_FINANCE });
   get('/api/closings/:date', closings.get, { roles: BOSS_FINANCE });
   post('/api/closings', closings.create, { roles: BOSS_FINANCE, action: '执行日结', module: 'daily_closing', audit: false });
+  post('/api/closings/:date/reopen', closings.reopen, { roles: BOSS, audit: false });
 
   // 报表中心 / 首页
   get('/api/dashboard', reports.dashboard);

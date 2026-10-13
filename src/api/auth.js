@@ -102,7 +102,7 @@ function jscode2session(code) {
   const url = 'https://api.weixin.qq.com/sns/jscode2session?appid=' + encodeURIComponent(appid) +
     '&secret=' + encodeURIComponent(secret) + '&js_code=' + encodeURIComponent(code) + '&grant_type=authorization_code';
   return new Promise((resolve, reject) => {
-    https.get(url, (res) => {
+    const request = https.get(url, { timeout: 10000 }, (res) => {
       let data = '';
       res.on('data', (c) => { data += c; });
       res.on('end', () => {
@@ -114,7 +114,9 @@ function jscode2session(code) {
           reject(httpError(500, '微信接口响应异常'));
         }
       });
-    }).on('error', () => reject(httpError(500, '无法连接微信服务器')));
+    });
+    request.on('timeout', () => request.destroy(new Error('微信请求超时')));
+    request.on('error', () => reject(httpError(500, '无法连接微信服务器或请求超时')));
   });
 }
 
@@ -140,7 +142,7 @@ function login({ body, req }) {
 }
 
 // ---------------- 微信登录 ----------------
-async function wxLogin({ body }) {
+async function wxLogin({ body, req }) {
   const ts = Date.now();
   for (const [key, rec] of bindTokens) if (!rec || rec.expires < ts) bindTokens.delete(key);
   const code = (body.code || '').trim();
@@ -150,6 +152,7 @@ async function wxLogin({ body }) {
   const u = db.prepare('SELECT * FROM staff WHERE wx_openid = ?').get(openid);
   if (u) {
     if (u.status !== 'active') return fail(403, '该账号已被禁用');
+    if (req) req.user = u;
     const { token } = createSession(u.id);
     return ok({ token, user: publicStaff(u), wx_bound: true });
   }

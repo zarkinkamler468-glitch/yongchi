@@ -33,12 +33,17 @@ Page({
     const amt = Number(this.data.rechargeAmount);
     if (!amt || amt <= 0) { toast('请输入充值金额'); return; }
     const rid = this.data.requestId || `recharge-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const body = { order_type: 'recharge', member_id: Number(this.data.id), member_card_id: Number(this.data.rechargeCardId), amount: amt, payments: [{ pay_method: this.data.payValues[this.data.payIndex], amount: amt }] };
+    const signature = JSON.stringify(body);
+    if (this._pendingRecharge && this._pendingRecharge !== signature) { toast('上一笔结果尚未确认，请恢复原参数重试后再办理新业务'); return; }
+    this._pendingRecharge = signature;
     this.setData({ submitting: true, requestId: rid });
-    request('/api/orders', { data: { order_type: 'recharge', member_id: Number(this.data.id), member_card_id: Number(this.data.rechargeCardId), amount: amt, request_id: rid, payments: [{ pay_method: this.data.payValues[this.data.payIndex], amount: amt }] } })
-      .then(() => { toast('充值成功', 'success'); this.setData({ submitting: false, requestId: '', showRecharge: false }); this.load(); })
-      .catch((e) => { this.setData({ submitting: false }); toast(e.message); });
+    request('/api/orders', { data: { ...body, request_id: rid } })
+      .then(() => { this._pendingRecharge = null; toast('充值成功', 'success'); this.setData({ submitting: false, requestId: '', showRecharge: false }); this.load(); })
+      .catch((e) => { const rejected = e.status >= 400 && e.status < 500; if (rejected) this._pendingRecharge = null; this.setData({ submitting: false, requestId: rejected ? '' : rid }); toast(e.message); });
   },
   doCheckin() {
+    if (this._pendingCheckin) { this.confirmCheckin(); return; }
     const m = this.data.member;
     request('/api/entries/preview?keyword=' + encodeURIComponent(m.member_no) + '&people=1')
       .then((d) => this.setData({ checkinPreview: { cardId: d.card.id, cardName: d.card.card_name, cardType: d.card.card_type, uses: d.card.preview_deducted_uses, amount: fmtMoney(d.card.preview_deducted_amount), remaining: d.card.remaining_uses, balance: fmtMoney(d.card.balance) } }))
@@ -46,12 +51,14 @@ Page({
   },
   cancelCheckin() { this.setData({ checkinPreview: null }); },
   confirmCheckin() {
-    if (this.data.checkinSubmitting || !this.data.checkinPreview) return;
+    if (this.data.checkinSubmitting || (!this.data.checkinPreview && !this._pendingCheckin)) return;
     const m = this.data.member;
     const rid = this.data.checkinRequestId || `checkin-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     this.setData({ checkinSubmitting: true, checkinRequestId: rid });
-    request('/api/entries/checkin', { data: { keyword: m.member_no, card_id: this.data.checkinPreview.cardId, gate_no: '小程序会员详情', people: 1, confirmed: true, request_id: rid } })
-      .then(() => { toast('核销成功', 'success'); this.setData({ checkinSubmitting: false, checkinRequestId: '', checkinPreview: null }); this.load(); })
-      .catch((e) => { this.setData({ checkinSubmitting: false }); toast(e.message); });
+    const body = this._pendingCheckin || { keyword: m.member_no, card_id: this.data.checkinPreview.cardId, gate_no: '小程序会员详情', people: 1, confirmed: true, request_id: rid };
+    this._pendingCheckin = body;
+    request('/api/entries/checkin', { data: body })
+      .then(() => { this._pendingCheckin = null; toast('核销成功', 'success'); this.setData({ checkinSubmitting: false, checkinRequestId: '', checkinPreview: null }); this.load(); })
+      .catch((e) => { const rejected = e.status >= 400 && e.status < 500; if (rejected) this._pendingCheckin = null; this.setData({ checkinSubmitting: false, checkinRequestId: rejected ? '' : rid }); toast(e.message); });
   }
 });

@@ -1,11 +1,12 @@
 'use strict';
 
 const { db } = require('../db');
-const { today, now, addDays, money, isDateString } = require('../util');
+const { today, now, addDays, money, cents, isDateString } = require('../util');
 const { ok, fail } = require('../http');
-const { CARD_TYPES } = require('./common');
+const { CARD_TYPES, atomic } = require('./common');
 const audit = require('./audit');
 const sms = require('../sms');
+const { paginate } = require('./pagination');
 
 const CARD_STATUS = { normal: '正常', frozen: '冻结', expired: '过期', void: '作废', refunded: '已退款' };
 const CARD_TYPE_LABEL = { count: '次卡', month: '月卡', year: '年卡', stored: '储值卡' };
@@ -24,9 +25,18 @@ function calendarDays(from, to) {
   return Number.isFinite(diff) ? Math.max(0, diff) : 0;
 }
 
+// 冻结期间已经暂停的天数属于尚未消费的期限权益，不改变冻结状态。
+function effectiveCardEnd(card) {
+  if (!card || !card.end_at || card.status !== 'frozen') return card && card.end_at;
+  const cutoff = card.frozen_until && card.frozen_until < today() ? card.frozen_until : today();
+  return addDays(card.end_at, calendarDays(card.frozen_from, cutoff));
+}
+
 // 冻结截止日到达后惰性自动解冻；有效期只顺延实际冻结的日历天数。
-function refreshFrozenCard(card, forceDate) {
+function refreshFrozenCard(card, options = {}) {
   if (!card || card.status !== 'frozen') return card;
+  const forceDate = options && typeof options === 'object' ? options.forceDate : null;
+  if (forceDate && (!isDateString(forceDate) || forceDate > today())) throw Object.assign(new Error('解冻日期格式无效或晚于今天'), { status: 400 });
   const thawDate = forceDate || (card.frozen_until && card.frozen_until <= today() ? today() : null);
   if (!thawDate) return card;
   const days = calendarDays(card.frozen_from, card.frozen_until && card.frozen_until < thawDate ? card.frozen_until : thawDate);
@@ -93,9 +103,10 @@ function validateProduct(body) {
   const uses = Number(body.total_uses || 0);
   const stored = Number(body.stored_value || 0);
   const fee = Number(body.entry_fee || 0);
+  try { cents(body.price, '卡项价格'); cents(body.stored_value ?? 0, '储值金额'); cents(body.entry_fee ?? 0, '入场扣费'); } catch (e) { return fail(400, e.message); }
   if (!Number.isFinite(price) || price < 0) return fail(400, '卡项价格不能为负数');
-  if (!Number.isFinite(duration) || duration < 0 || !Number.isInteger(duration)) return fail(400, '有效天数必须是非负整数');
-  if (!Number.isFinite(uses) || uses < 0 || !Number.isInteger(uses)) return fail(400, '次数必须是非负整数');
+  if (!Number.isFinite(duration) || duration < 0 || duration > 36500 || !Number.isInteger(duration)) return fail(400, '有效天数必须是 0 到 36500 的整数');
+  if (!Number.isFinite(uses) || uses < 0 || uses > 1000000 || !Number.isInteger(uses)) return fail(400, '次数必须是 0 到 1000000 的整数');
   if (!Number.isFinite(stored) || stored < 0) return fail(400, '储值金额不能为负数');
   if (!Number.isFinite(fee) || fee < 0) return fail(400, '单次入场扣费不能为负数');
   if (body.type === 'count' && uses <= 0) return fail(400, '次卡总次数必须大于 0');
@@ -126,10 +137,12 @@ function listCards({ query }) {
     LEFT JOIN members m ON m.id = mc.member_id
     LEFT JOIN card_products cp ON cp.id = mc.card_product_id
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-    ORDER BY mc.id DESC LIMIT 1000
+    ORDER BY mc.id DESC
   `;
-  const rows = db.prepare(sql).all(...args).map((c) => refreshFrozenCard(c));
-  return ok({ list: rows.map(decorateCard) });
+  // 先刷新状态再筛选，避免已自动解冻的卡落入错误状态分页。
+  db.prepare("SELECT * FROM member_cards WHERE status='frozen' AND frozen_until <= ?").all(today()).forEach(c => refreshFrozenCard(c));
+  const page = paginate(sql.replace('mc.status = ?', "(CASE WHEN mc.status='normal' AND mc.card_type!='stored' AND mc.end_at < date('now','localtime') THEN 'expired' ELSE mc.status END) = ?"), args, query);
+  return ok({ ...page, list: page.list.map(decorateCard) });
 }
 
 function getCard({ params }) {
@@ -177,7 +190,7 @@ function unfreeze({ params, body, req }) {
   const c = db.prepare('SELECT * FROM member_cards WHERE id = ?').get(params.id);
   if (!c) return fail(404, '会员卡不存在');
   if (c.status !== 'frozen') return fail(400, '该卡不在冻结状态');
-  const refreshed = refreshFrozenCard(c, today());
+  const refreshed = refreshFrozenCard(c, { forceDate: today() });
   audit.record({ req, action: '解冻会员卡', target_type: 'member_card', target_id: c.id, reason: body.reason });
   sms.accountChange(memberOf(c), '会员卡解冻', `${c.card_no}已解冻${refreshed.end_at ? `，有效期至${refreshed.end_at}` : ''}`);
   return ok({ card: decorateCard(refreshed) });
@@ -189,13 +202,13 @@ function extend({ params, body, req }) {
   if (!c) return fail(404, '会员卡不存在');
   if (['void', 'refunded'].includes(c.status)) return fail(400, '该卡已作废或退款，不可延期');
   const days = Number(body.days);
-  if (!Number.isFinite(days) || days <= 0 || !Number.isInteger(days)) return fail(400, '延期天数必须是正整数');
+  if (!Number.isFinite(days) || days <= 0 || days > 36500 || !Number.isInteger(days)) return fail(400, '延期天数必须是 1 到 36500 的整数');
   if (c.card_type === 'stored') return fail(400, '储值卡没有有效期，无需延期');
   const p = productOf(c);
   if (p && !p.extension_allowed) return fail(400, '该卡项不允许延期');
   const base = c.end_at && c.end_at >= today() ? c.end_at : today();
   const endAt = addDays(base, days);
-  db.prepare('UPDATE member_cards SET end_at = ?, updated_at = ? WHERE id = ?').run(endAt, now(), c.id);
+  db.prepare("UPDATE member_cards SET end_at = ?, status = CASE WHEN status='expired' THEN 'normal' ELSE status END, updated_at = ? WHERE id = ?").run(endAt, now(), c.id);
   audit.record({ req, action: '会员卡延期', target_type: 'member_card', target_id: c.id, after: { days, end_at: endAt }, reason: body.reason });
   sms.accountChange(memberOf(c), '会员卡延期', `${c.card_no}延期${days}天，有效期至${endAt}`);
   return ok({ card: decorateCard(db.prepare('SELECT * FROM member_cards WHERE id = ?').get(c.id)) });
@@ -235,6 +248,6 @@ function voidCard({ params, body, req }) {
 
 module.exports = {
   listProducts, createProduct, updateProduct, disableProduct,
-  listCards, getCard, freeze, unfreeze, extend, transfer, voidCard,
-  refreshFrozenCard, decorateCard
+  listCards, getCard, freeze: atomic(freeze), unfreeze: atomic(unfreeze), extend: atomic(extend), transfer: atomic(transfer), voidCard: atomic(voidCard),
+  refreshFrozenCard, decorateCard, effectiveCardEnd
 };

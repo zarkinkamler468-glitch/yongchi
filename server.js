@@ -68,7 +68,11 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Referrer-Policy', 'same-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'");
-  const url = new URL(req.url, 'http://localhost');
+  let url;
+  try { url = new URL(req.url, 'http://localhost'); } catch (_) {
+    sendJSON(res, 400, { error: '请求地址格式无效' });
+    return;
+  }
   let pathname;
   try {
     pathname = decodeURIComponent(url.pathname);
@@ -89,8 +93,13 @@ const server = http.createServer(async (req, res) => {
       req.user = user;
       req.authToken = token;
     }
-    const handled = await router.handle(req, res);
-    if (!handled) sendJSON(res, 404, { error: '接口不存在' });
+    try {
+      const handled = await router.handle(req, res);
+      if (!handled) sendJSON(res, 404, { error: '接口不存在' });
+    } catch (_) {
+      if (!res.headersSent && !res.destroyed) sendJSON(res, 500, { error: '服务器错误' });
+      console.error('[请求] 接口处理异常，请检查服务器状态');
+    }
     return;
   }
   if (pathname === '/favicon.ico') {
@@ -110,7 +119,7 @@ server.on('error', (err) => {
   process.exit(1);
 });
 
-server.listen(PORT, HOST, () => {
+if (require.main === module) server.listen(PORT, HOST, () => {
   prune(); // 启动时清理过期操作日志
   console.log('==============================================');
   console.log(`  ${getSetting('store_name') || '游泳馆管理'} - 游泳池管理系统`);
@@ -121,3 +130,5 @@ server.listen(PORT, HOST, () => {
   console.log('  按 Ctrl+C 停止服务');
   console.log('==============================================');
 });
+
+module.exports = { server };

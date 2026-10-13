@@ -6,7 +6,7 @@
 
 - Node.js 内置 HTTP 服务
 - SQLite 单文件数据库
-- 无第三方 npm 依赖，不需要执行 `npm install`
+- Excel 导入依赖 `exceljs`，首次部署与升级都需在运行环境的项目目录执行 `npm ci --omit=dev`。
 - 后台端口默认为 3000
 - 生产环境必须通过 HTTPS 域名访问
 
@@ -81,6 +81,8 @@ src
 public
 miniprogram
 ```
+
+在 1Panel Node.js 运行环境（或对应容器终端）中进入源码目录执行 `npm ci --omit=dev`，确认依赖安装成功后再启动；请勿跳过此步直接运行 `node server.js`。
 
 注意：以后升级代码时保留：
 
@@ -331,12 +333,15 @@ sqlite3 /opt/pool-management-system/data/pool.db \
 4. 在本地或服务器执行：
 
 ```bash
+npm ci --omit=dev
 npm test
 ```
 
 5. 在 1Panel 点击运行环境「重启」或「重新部署」。
 6. 查看容器日志。
 7. 抽查登录、会员、收银流水和报表。
+
+本次升级会增加入场人数、订单权益快照标记及金额约束，不删除业务表。旧入场仅次卡可准确回填人数，其他卡种旧记录保留 1 人。缺少快照的历史订单禁止自动退款，需人工核算。已日结营业日锁定新业务，老板可在日结详情填写原因重开。旧库若缺少超管，启动前必须配置至少 8 位 `PMS_INITIAL_ADMIN_PASSWORD`；若 `admin` 用户名被其他角色占用，请联系维护人员处理，系统不会自动提权或重置旧账号。
 
 不要在生产服务器执行：
 

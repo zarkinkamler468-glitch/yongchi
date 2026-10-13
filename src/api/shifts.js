@@ -1,9 +1,11 @@
 'use strict';
 
 const { db } = require('../db');
-const { now, money } = require('../util');
+const { now, money, cents } = require('../util');
 const { ok, fail } = require('../http');
 const audit = require('./audit');
+const { ensureBusinessOpen, atomic } = require('./common');
+const { paginate } = require('./pagination');
 
 function canUseShift(req) {
   return req && req.user && ['boss', 'frontdesk', 'admin'].includes(req.user.role);
@@ -46,9 +48,9 @@ function list({ req, query }) {
   if (req.user.role === 'frontdesk') { where.push('s.staff_id = ?'); args.push(req.user.id); }
   const status = query.get('status');
   if (status) { where.push('s.status = ?'); args.push(status); }
-  const sql = 'SELECT s.* FROM shifts s' + (where.length ? ' WHERE ' + where.join(' AND ') : '') + ' ORDER BY s.id DESC LIMIT 500';
-  const rows = db.prepare(sql).all(...args);
-  return ok({ list: rows.map(decorate) });
+  const sql = 'SELECT s.* FROM shifts s' + (where.length ? ' WHERE ' + where.join(' AND ') : '') + ' ORDER BY s.id DESC';
+  const page = paginate(sql, args, query);
+  return ok({ ...page, list: page.list.map(decorate) });
 }
 
 // GET /api/shifts/current
@@ -61,10 +63,11 @@ function current({ req }) {
 // POST /api/shifts/start
 function start({ req, body }) {
   if (!canUseShift(req)) return fail(403, '财务账号不参与班次');
+  try { ensureBusinessOpen(); } catch (e) { return fail(e.status, e.message); }
   const active = db.prepare("SELECT * FROM shifts WHERE staff_id = ? AND status = 'active'").get(req.user.id);
   if (active) return ok({ shift: decorate(active) });
-  const openingCash = money(body.opening_cash || 0);
-  if (!Number.isFinite(Number(body.opening_cash || 0)) || openingCash < 0) return fail(400, '开班备用金不能为负数');
+  let openingCash;
+  try { openingCash = cents(body.opening_cash ?? 0, '开班备用金') / 100; } catch (e) { return fail(400, e.message); }
   const r = db.prepare("INSERT INTO shifts(staff_id, started_at, opening_cash, status) VALUES (?, ?, ?, 'active')")
     .run(req.user.id, now(), openingCash);
   const s = db.prepare('SELECT * FROM shifts WHERE id = ?').get(Number(r.lastInsertRowid));
@@ -77,7 +80,7 @@ function get({ params, req }) {
   const s = db.prepare('SELECT * FROM shifts WHERE id = ?').get(params.id);
   if (!s) return fail(404, '班次不存在');
   if (req.user.role === 'frontdesk' && Number(s.staff_id) !== Number(req.user.id)) return fail(403, '前台只能查看自己的班次');
-  const orders = db.prepare('SELECT * FROM orders WHERE shift_id = ? ORDER BY id DESC LIMIT 500').all(s.id);
+  const orders = db.prepare('SELECT * FROM orders WHERE shift_id = ? ORDER BY id DESC').all(s.id);
   const summary = shiftSummary(s.id);
   return ok({ shift: decorate(s), summary, orders });
 }
@@ -90,8 +93,8 @@ function close({ params, body, req }) {
   if (s.status !== 'active') return fail(400, '该班次已交班');
   if (Number(s.staff_id) !== Number(req.user.id) && !['boss', 'admin'].includes(req.user.role)) return fail(403, '只能交接自己的班次');
   const summary = shiftSummary(s.id);
-  const actualCash = body.actual_cash === undefined || body.actual_cash === '' ? null : money(Number(body.actual_cash));
-  if (actualCash !== null && (!Number.isFinite(Number(body.actual_cash)) || actualCash < 0)) return fail(400, '实点现金必须是非负数');
+  let actualCash;
+  try { actualCash = body.actual_cash === undefined || body.actual_cash === '' ? null : cents(body.actual_cash, '实点现金') / 100; } catch (e) { return fail(400, e.message); }
   let difference = null;
   if (actualCash !== null) difference = money(actualCash - summary.cash_should);
   if (difference !== null && Math.abs(difference) > 0.001 && !(body.note || '').trim()) {
@@ -103,4 +106,4 @@ function close({ params, body, req }) {
   return ok({ shift: decorate(db.prepare('SELECT * FROM shifts WHERE id = ?').get(s.id)), summary });
 }
 
-module.exports = { list, current, start, get, close, shiftSummary };
+module.exports = { list, current, start, get, close: atomic(close), shiftSummary };

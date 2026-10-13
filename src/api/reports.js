@@ -3,6 +3,12 @@
 const { db } = require('../db');
 const { today, addDays, money, isDateString } = require('../util');
 const { ok, fail } = require('../http');
+const { paginate } = require('./pagination');
+const { refreshFrozenCard } = require('./cards');
+
+function refreshDueCards() {
+  db.prepare("SELECT * FROM member_cards WHERE status='frozen' AND frozen_until <= ?").all(today()).forEach(c => refreshFrozenCard(c));
+}
 
 function dayRange(date) {
   return [date, addDays(date, 1)];
@@ -33,13 +39,14 @@ function reportRange(query) {
 
 // GET /api/dashboard  首页总览
 function dashboard({ req }) {
+  refreshDueCards();
   const [d0, d1] = dayRange(today());
   const income = incomeBetween(d0, d1);
   const refund = refundBetween(d0, d1);
   const open = externalIncomeByType('open', d0, d1);
   const renew = externalIncomeByType('renew', d0, d1);
   const recharge = externalIncomeByType('recharge', d0, d1);
-  const entries = db.prepare("SELECT COUNT(*) AS v FROM entries WHERE result='success' AND entry_at >= ? AND entry_at < ?").get(d0, d1).v;
+  const entries = db.prepare("SELECT COALESCE(SUM(people),0) AS v FROM entries WHERE result='success' AND entry_at >= ? AND entry_at < ?").get(d0, d1).v;
   const expiring = db.prepare("SELECT COUNT(*) AS v FROM member_cards WHERE card_type IN ('count','month','year') AND status = 'normal' AND end_at IS NOT NULL AND end_at >= ? AND end_at <= ?").get(today(), addDays(today(), 7)).v;
   const lowBalance = db.prepare("SELECT COUNT(*) AS v FROM member_cards mc WHERE mc.card_type='stored' AND mc.status='normal' AND mc.balance < mc.entry_fee").get().v;
   const blacklist = db.prepare("SELECT COUNT(*) AS v FROM members WHERE status='blacklist'").get().v;
@@ -50,7 +57,7 @@ function dashboard({ req }) {
   for (let i = 13; i >= 0; i--) {
     const day = addDays(today(), -i);
     const [a, b] = dayRange(day);
-    recent.push({ date: day, income: money(incomeBetween(a, b)), entries: db.prepare("SELECT COUNT(*) AS v FROM entries WHERE result='success' AND entry_at >= ? AND entry_at < ?").get(a, b).v });
+    recent.push({ date: day, income: money(incomeBetween(a, b)), entries: db.prepare("SELECT COALESCE(SUM(people),0) AS v FROM entries WHERE result='success' AND entry_at >= ? AND entry_at < ?").get(a, b).v });
   }
 
   return ok({
@@ -74,7 +81,7 @@ function overview({ query }) {
   const { from, to, endDate } = range;
   const income = incomeBetween(from, to);
   const refund = refundBetween(from, to);
-  const entries = db.prepare("SELECT COUNT(*) AS v FROM entries WHERE result='success' AND entry_at >= ? AND entry_at < ?").get(from, to).v;
+  const entries = db.prepare("SELECT COALESCE(SUM(people),0) AS v FROM entries WHERE result='success' AND entry_at >= ? AND entry_at < ?").get(from, to).v;
   const newMembers = db.prepare('SELECT COUNT(*) AS v FROM members WHERE is_imported = 0 AND created_at >= ? AND created_at < ?').get(from, to).v;
 
   const byCard = db.prepare(`
@@ -130,49 +137,54 @@ function staffPerformance({ query }) {
       COALESCE((SELECT SUM(-p.amount) FROM orders r JOIN orders original ON original.id=r.original_order_id JOIN payments p ON p.order_id=r.id WHERE r.order_type='refund' AND r.status='paid' AND p.amount<0 AND p.pay_method!='stored' AND original.staff_id=s.id AND p.paid_at >= ? AND p.paid_at < ?),0) AS refund_amount
     FROM staff s LEFT JOIN orders o ON o.staff_id = s.id AND o.created_at >= ? AND o.created_at < ?
     WHERE s.status = 'active' OR EXISTS (SELECT 1 FROM orders ox WHERE ox.staff_id=s.id AND ox.created_at >= ? AND ox.created_at < ?)
+      OR EXISTS (SELECT 1 FROM orders r JOIN orders original ON original.id=r.original_order_id WHERE original.staff_id=s.id AND r.order_type='refund' AND r.status='paid' AND COALESCE(r.approved_at,r.created_at) >= ? AND COALESCE(r.approved_at,r.created_at) < ?)
     GROUP BY s.id ORDER BY gross_amount DESC, s.id
-  `).all(from, to, from, to, from, to, from, to);
+  `).all(from, to, from, to, from, to, from, to, from, to);
   return ok({ from, to: endDate, list: rows.map((r) => ({ ...r, open_amount: money(r.open_amount), renew_amount: money(r.renew_amount), recharge_amount: money(r.recharge_amount), gross_amount: money(r.gross_amount), refund_amount: money(r.refund_amount), net_amount: money(Number(r.gross_amount) - Number(r.refund_amount)) })) });
 }
 
 // GET /api/reports/cards-expiring?days=30
 function cardsExpiring({ query }) {
-  const days = Number(query.get('days')) || 30;
-  if (!Number.isFinite(days) || days < 0 || days > 3650) return fail(400, '查询天数范围无效');
-  const rows = db.prepare(`
+  refreshDueCards();
+  const days = Number(query.get('days') ?? 30);
+  if (!Number.isInteger(days) || days < 0 || days > 3650) return fail(400, '查询天数须为 0 到 3650 的整数');
+  const sql = `
     SELECT mc.*, m.name AS member_name, m.member_no, m.phone
     FROM member_cards mc JOIN members m ON m.id = mc.member_id
     WHERE mc.card_type IN ('count','month','year') AND mc.status = 'normal' AND mc.end_at IS NOT NULL AND mc.end_at >= ? AND mc.end_at <= ?
-    ORDER BY mc.end_at LIMIT 500
-  `).all(today(), addDays(today(), days));
-  return ok({ list: rows });
+    ORDER BY mc.end_at, mc.id
+  `;
+  return ok(paginate(sql, [today(), addDays(today(), days)], query));
 }
 
 // CSV 导出：订单流水
 function csvEscape(v) {
   let s = String(v === null || v === undefined ? '' : v);
   // 防止 Excel / WPS 将会员输入的内容当作公式执行。
-  if (/^[=+\-@]/.test(s)) s = "'" + s;
-  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  if (/^\s*[=+\-@]/.test(s) || /^[\t\r\n]/.test(s)) s = "'" + s;
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
 
 function exportOrders({ query }) {
   const range = reportRange(query); if (range.error) return range.error;
   const { from, to, endDate } = range;
   const rows = db.prepare(`
-    SELECT o.order_no, o.order_type, o.status, o.total_amount, o.discount_amount, o.payable_amount, o.paid_amount, o.created_at,
+    SELECT o.order_no, o.order_type, o.status, o.total_amount, o.discount_amount, o.payable_amount,
+      CASE WHEN o.order_type='refund' THEN CASE WHEN o.status='paid' THEN -o.total_amount ELSE 0 END ELSE o.paid_amount END AS paid_amount,
+      CASE WHEN o.order_type='refund' AND o.status='paid' THEN COALESCE(o.approved_at,o.created_at) ELSE o.created_at END AS business_at,
       m.name AS member_name, m.member_no, mc.card_no, s.real_name AS staff_name
     FROM orders o
     LEFT JOIN members m ON m.id = o.member_id
     LEFT JOIN member_cards mc ON mc.id = o.member_card_id
     LEFT JOIN staff s ON s.id = o.staff_id
-    WHERE o.created_at >= ? AND o.created_at < ?
+    WHERE (CASE WHEN o.order_type='refund' AND o.status='paid' THEN COALESCE(o.approved_at,o.created_at) ELSE o.created_at END) >= ?
+      AND (CASE WHEN o.order_type='refund' AND o.status='paid' THEN COALESCE(o.approved_at,o.created_at) ELSE o.created_at END) < ?
     ORDER BY o.id
   `).all(from, to);
   const head = ['订单号', '类型', '状态', '原价', '优惠', '应付', '实付', '会员', '会员号', '卡号', '操作员', '时间'];
   const lines = [head.join(',')];
   for (const r of rows) {
-    lines.push([r.order_no, r.order_type, r.status, r.total_amount, r.discount_amount, r.payable_amount, r.paid_amount, r.member_name, r.member_no, r.card_no, r.staff_name, r.created_at].map(csvEscape).join(','));
+    lines.push([r.order_no, r.order_type, r.status, r.total_amount, r.discount_amount, r.payable_amount, r.paid_amount, r.member_name, r.member_no, r.card_no, r.staff_name, r.business_at].map(csvEscape).join(','));
   }
   return ok({ csv: '\ufeff' + lines.join('\n'), filename: `订单流水_${from}_${endDate}.csv` });
 }

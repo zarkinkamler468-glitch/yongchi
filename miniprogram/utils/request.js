@@ -17,14 +17,24 @@ function request(path, options = {}) {
       ),
       success(res) {
         if (res.statusCode >= 200 && res.statusCode < 300) {
-          resolve(res.data);
-        } else if (res.statusCode === 401 && path !== '/api/auth/login') {
+          const data = res.data;
+          if (method === 'GET' && !/[?&]page=/.test(path) && Array.isArray(data.list) && data.has_more) {
+            (async () => {
+              let page = data.page;
+              while (data.has_more) {
+                const next = await request(path + (path.includes('?') ? '&' : '?') + 'page=' + (++page), options);
+                data.list.push(...next.list); data.has_more = next.has_more;
+              }
+              return data;
+            })().then(resolve, reject);
+          } else resolve(data);
+        } else if (res.statusCode === 401 && !['/api/auth/login', '/api/auth/wxbind', '/api/auth/wxlogin'].includes(path)) {
           wx.removeStorageSync('token');
           wx.removeStorageSync('user');
           wx.reLaunch({ url: '/pages/login/login' });
           reject(new Error((res.data && res.data.error) || '未登录'));
         } else {
-          reject(new Error((res.data && res.data.error) || '请求失败(' + res.statusCode + ')'));
+          reject(Object.assign(new Error((res.data && res.data.error) || '请求失败(' + res.statusCode + ')'), { status: res.statusCode }));
         }
       },
       fail() {

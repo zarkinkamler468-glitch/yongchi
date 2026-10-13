@@ -3,6 +3,7 @@
 const { db } = require('../db');
 const { now, addDays, today } = require('../util');
 const { ok } = require('../http');
+const { paginate } = require('./pagination');
 
 const LOG_RETAIN_DAYS = 90;
 
@@ -52,10 +53,9 @@ function list({ query }) {
     SELECT l.id, l.staff_id, s.real_name AS staff_name, l.action, l.target_type, l.target_id, l.reason, l.ip, l.created_at
     FROM operation_logs l LEFT JOIN staff s ON s.id = l.staff_id
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-    ORDER BY l.id DESC LIMIT 300
+    ORDER BY l.id DESC
   `;
-  const rows = db.prepare(sql).all(...args);
-  return ok({ list: rows, total: rows.length });
+  return ok(paginate(sql, args, query));
 }
 
 module.exports = { record, list, prune };

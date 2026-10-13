@@ -8,7 +8,24 @@ function pad(n) {
 
 // 金额统一保留两位小数
 function money(n) {
-  return Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100;
+  const value = Number(n ?? 0);
+  if (!Number.isFinite(value) || Math.abs(value) > Number.MAX_SAFE_INTEGER / 100) {
+    const e = new Error('金额必须为安全范围内的有限数值'); e.status = 400; throw e;
+  }
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+// 外部输入以整数分校验，拒绝多余小数；内部计算仍用 money 四舍五入。
+function cents(value, label = '金额') {
+  if (!['number', 'string'].includes(typeof value) || String(value).trim() === '') {
+    const e = new Error(`${label}格式无效`); e.status = 400; throw e;
+  }
+  const n = Number(value); money(n);
+  const result = Math.round(n * 100);
+  if (n < 0 || n > 1000000000 || Math.abs(n * 100 - result) > 0.00001) {
+    const e = new Error(`${label}必须为非负金额，最多两位小数`); e.status = 400; throw e;
+  }
+  return result;
 }
 
 // 本地时区日期 YYYY-MM-DD
@@ -62,4 +79,4 @@ function nextNo(db, table, prefix, width) {
   return genNo(prefix, n, width);
 }
 
-module.exports = { pad, money, today, now, fmtDate, addMonths, addDays, isDateString, genNo, nextNo };
+module.exports = { pad, money, cents, today, now, fmtDate, addMonths, addDays, isDateString, genNo, nextNo };

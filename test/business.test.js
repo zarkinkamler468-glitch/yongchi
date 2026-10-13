@@ -10,6 +10,7 @@ const { DatabaseSync } = require('node:sqlite');
 const ExcelJS = require('exceljs');
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pms-test-'));
+process.env.NODE_ENV = 'test';
 process.env.PMS_DB_PATH = path.join(testDir, 'pool-test.db');
 process.env.PMS_SEED_DEMO = '0';
 

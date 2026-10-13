@@ -2,20 +2,21 @@
 
 const crypto = require('node:crypto');
 const { db, getSetting } = require('../db');
-const { today, now, money, addDays } = require('../util');
+const { today, now, money, cents, addDays } = require('../util');
 const { ok, fail, httpError } = require('../http');
-const { nextOrderNo, nextCardNo, resolveMember, ensureShift, computeCardEnd } = require('./common');
+const { nextOrderNo, nextCardNo, resolveMember, ensureShift, computeCardEnd, ensureBusinessOpen, atomic } = require('./common');
 const audit = require('./audit');
 const sms = require('../sms');
-const { refreshFrozenCard } = require('./cards');
+const { refreshFrozenCard, effectiveCardEnd } = require('./cards');
+const { paginate } = require('./pagination');
 
 const ORDER_TYPES = ['open', 'renew', 'recharge', 'refund'];
 const PAY_METHODS = ['cash', 'wechat', 'alipay', 'stored'];
 
 function requestHash(kind, body) {
-  const payments = Array.isArray(body.payments) ? body.payments.map((p) => ({ method: p.pay_method || '', amount: money(p.amount), no: String(p.transaction_no || '') })) : [];
+  const payments = Array.isArray(body.payments) ? body.payments.map((p) => ({ method: p.pay_method || '', amount: money(p.amount), source_card_id: Number(p.source_card_id) || null, no: String(p.transaction_no || '') })) : [];
   const payload = kind === 'refund'
-    ? { kind, amount: body.amount === undefined || body.amount === '' ? null : money(body.amount), reason: String(body.reason || '').trim() }
+    ? { kind, original_order_id: Number(body.original_order_id), amount: body.amount === undefined || body.amount === '' || body.amount === null ? null : money(body.amount), reason: String(body.reason || '').trim() }
     : { kind, member_id: Number(body.member_id) || null, name: String(body.name || '').trim(), phone: String(body.phone || '').replace(/[\s-]/g, ''), gender: body.gender || '', product: Number(body.card_product_id) || null, card: Number(body.member_card_id) || null, amount: money(body.amount), discount: money(body.discount_amount), payments };
   return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
@@ -48,15 +49,19 @@ function entitlementDelta(order, refundAmount) {
   const totalAfter = money(previous + refundAmount);
   const paid = Number(order.paid_amount);
   if (!(paid > 0)) return { uses: 0, amount: 0, days: 0, totalAfter };
-  const beforeRatio = Math.min(1, previous / paid);
-  const afterRatio = Math.min(1, totalAfter / paid);
+  const paidCents = BigInt(cents(paid));
+  const beforeCents = BigInt(cents(Math.min(paid, money(previous))));
+  const afterCents = BigInt(cents(Math.min(paid, totalAfter)));
+  // 按整数分计算累计回收，避免 0.07 / 0.35 * 10 被浮点误差向上取整为 3。
+  const recoverWhole = (granted, refunded) => Number((BigInt(granted) * refunded + paidCents - 1n) / paidCents);
+  const recoverCents = (granted, refunded) => Number((BigInt(cents(granted)) * refunded * 2n + paidCents) / (paidCents * 2n));
   const grantedUses = Number(order.benefit_uses) || 0;
   const grantedAmount = Number(order.benefit_amount) || 0;
   const grantedDays = Number(order.benefit_days) || 0;
   return {
-    uses: Math.max(0, Math.ceil(grantedUses * afterRatio) - Math.ceil(grantedUses * beforeRatio)),
-    amount: money(Math.max(0, money(grantedAmount * afterRatio) - money(grantedAmount * beforeRatio))),
-    days: Math.max(0, Math.ceil(grantedDays * afterRatio) - Math.ceil(grantedDays * beforeRatio)),
+    uses: Math.max(0, recoverWhole(grantedUses, afterCents) - recoverWhole(grantedUses, beforeCents)),
+    amount: Math.max(0, recoverCents(grantedAmount, afterCents) - recoverCents(grantedAmount, beforeCents)) / 100,
+    days: Math.max(0, recoverWhole(grantedDays, afterCents) - recoverWhole(grantedDays, beforeCents)),
     totalAfter
   };
 }
@@ -67,7 +72,7 @@ function validateEntitlementRefund(order, card, delta, full) {
   if (delta.amount > Number(card.balance) + 0.001) throw httpError(400, `可退权益不足，需收回 ${delta.amount} 元，当前余额仅 ${money(card.balance)} 元`);
   if (delta.days > 0) {
     if (!card.end_at) throw httpError(400, '会员卡有效期异常，无法退款');
-    if (addDays(card.end_at, -delta.days) < today()) throw httpError(400, '该有效期权益已部分使用，无法按当前金额退款');
+    if (addDays(effectiveCardEnd(card), -delta.days) < today()) throw httpError(400, '该有效期权益已部分使用，无法按当前金额退款');
   }
   if (full && order.order_type === 'open') {
     const used = db.prepare("SELECT id FROM entries WHERE member_card_id = ? AND result = 'success' AND entry_at >= ? LIMIT 1").get(card.id, order.created_at);
@@ -84,12 +89,15 @@ function decorateOrder(o) {
 }
 
 // 扣减储值余额（支付方式为“储值”时）
-function deductStored(memberId, amount, excludeCardId) {
-  const cards = db.prepare("SELECT * FROM member_cards WHERE member_id = ? AND card_type = 'stored' AND status = 'normal' ORDER BY id").all(memberId);
-  for (const c of cards) {
+function deductStored(memberId, amount, excludeCardId, sourceCardId) {
+  const cards = db.prepare("SELECT * FROM member_cards WHERE member_id = ? AND card_type = 'stored' ORDER BY id").all(memberId);
+  for (const raw of cards) {
+    const c = refreshFrozenCard(raw);
+    if (sourceCardId && Number(c.id) !== Number(sourceCardId)) continue;
+    if (c.status !== 'normal' || (c.start_at && c.start_at > today())) continue;
     if (excludeCardId && Number(c.id) === Number(excludeCardId)) continue;
-    if (c.balance >= amount) {
-      db.prepare('UPDATE member_cards SET balance = balance - ?, updated_at = ? WHERE id = ?').run(amount, now(), c.id);
+    if (money(c.balance) >= amount) {
+      db.prepare('UPDATE member_cards SET balance = ROUND(balance - ?, 2), updated_at = ? WHERE id = ?').run(amount, now(), c.id);
       return c;
     }
   }
@@ -124,9 +132,9 @@ function list({ query, req }) {
   if (from) { where.push(businessTime + ' >= ?'); args.push(from); }
   const to = query.get('to');
   if (to) { where.push(businessTime + ' <= ?'); args.push(to + 'T23:59:59'); }
-  const sql = 'SELECT o.* FROM orders o LEFT JOIN members m ON m.id = o.member_id' + (where.length ? ' WHERE ' + where.join(' AND ') : '') + ' ORDER BY o.id DESC LIMIT 1000';
-  const rows = db.prepare(sql).all(...args);
-  return ok({ list: rows.map(decorateOrder), total: rows.length });
+  const sql = 'SELECT o.* FROM orders o LEFT JOIN members m ON m.id = o.member_id' + (where.length ? ' WHERE ' + where.join(' AND ') : '') + ' ORDER BY o.id DESC';
+  const page = paginate(sql, args, query);
+  return ok({ ...page, list: page.list.map(decorateOrder) });
 }
 
 function get({ params, req }) {
@@ -156,6 +164,7 @@ function create({ body, req }) {
   }
   const orderType = body.order_type;
   if (!['open', 'renew', 'recharge'].includes(orderType)) throw httpError(400, '无效的业务类型');
+  ensureBusinessOpen();
   const member = resolveMember(body);
   if (member.status === 'blacklist') throw httpError(400, '黑名单会员禁止办卡、续费');
   if (member.status === 'inactive') throw httpError(400, '会员已停用');
@@ -203,19 +212,10 @@ function create({ body, req }) {
       db.prepare("UPDATE member_cards SET remaining_uses = remaining_uses + ?, end_at = ?, status = 'normal', updated_at = ? WHERE id = ?")
         .run(cp.total_uses || 0, endAt, ts, card.id);
     }
-    else if (cp.type === 'stored') db.prepare('UPDATE member_cards SET balance = balance + ?, updated_at = ? WHERE id = ?').run(money(cp.stored_value), ts, card.id);
+    else if (cp.type === 'stored') db.prepare('UPDATE member_cards SET balance = ROUND(balance + ?, 2), updated_at = ? WHERE id = ?').run(money(cp.stored_value), ts, card.id);
     else {
       const base = card.end_at && card.end_at >= today() ? card.end_at : today();
-      const end = computeCardEnd(cp.type, cp.duration_days);
-      // 在现有有效期基础上顺延
-      const endD = end ? new Date(end + 'T00:00:00') : null;
-      const baseD = new Date(base + 'T00:00:00');
-      let endAt = null;
-      if (endD) {
-        const days = Math.round((endD - new Date(today() + 'T00:00:00')) / 86400000);
-        const dd = new Date(baseD); dd.setDate(dd.getDate() + days);
-        endAt = `${dd.getFullYear()}-${String(dd.getMonth() + 1).padStart(2, '0')}-${String(dd.getDate()).padStart(2, '0')}`;
-      }
+      const endAt = computeCardEnd(cp.type, cp.duration_days, base, !!card.end_at && card.end_at >= today());
       benefitDays = daysBetween(base, endAt);
       db.prepare('UPDATE member_cards SET end_at = ?, status = ?, updated_at = ? WHERE id = ?').run(endAt, 'normal', ts, card.id);
     }
@@ -225,14 +225,14 @@ function create({ body, req }) {
     if (!card || Number(card.member_id) !== Number(member.id)) throw httpError(400, '请选择正确的会员卡');
     if (card.card_type !== 'stored') throw httpError(400, '储值充值需选择储值卡');
     if (['void', 'refunded', 'frozen'].includes(card.status)) throw httpError(400, '该卡已作废、退款或冻结，不可充值');
-    total = money(body.amount);
+    total = cents(body.amount, '充值金额') / 100;
     if (!(total > 0)) throw httpError(400, '充值金额必须大于 0');
     memberCardId = card.id;
     benefitAmount = total;
-    db.prepare('UPDATE member_cards SET balance = balance + ?, updated_at = ? WHERE id = ?').run(total, ts, card.id);
+    db.prepare('UPDATE member_cards SET balance = ROUND(balance + ?, 2), updated_at = ? WHERE id = ?').run(total, ts, card.id);
   }
 
-  const discount = money(body.discount_amount || 0);
+  const discount = cents(body.discount_amount ?? 0, '优惠金额') / 100;
   if (!Number.isFinite(Number(body.discount_amount || 0)) || discount < 0) throw httpError(400, '优惠金额不能为负数');
   const payable = money(total - discount);
   if (payable < 0) throw httpError(400, '优惠金额不能超过应付金额');
@@ -244,11 +244,11 @@ function create({ body, req }) {
   let paySum = 0;
   for (const p of pays) {
     if (!PAY_METHODS.includes(p.pay_method)) throw httpError(400, '无效的支付方式');
-    const amt = money(p.amount);
+    const amt = cents(p.amount, '支付金额') / 100;
     if (!(amt > 0)) throw httpError(400, '支付金额必须大于 0');
     paySum = money(paySum + amt);
   }
-  if (Math.abs(paySum - payable) > 0.01) throw httpError(400, `支付金额合计(${paySum})必须等于实付金额(${payable})`);
+  if (Math.round(paySum * 100) !== Math.round(payable * 100)) throw httpError(400, `支付金额合计(${paySum})必须等于实付金额(${payable})`);
 
   // 创建订单
   const orderNo = nextOrderNo();
@@ -256,13 +256,14 @@ function create({ body, req }) {
     VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(orderNo, orderType, member.id, memberCardId, total, discount, payable, shift.id, staff.id, benefitUses, benefitAmount, benefitDays, requestId, fingerprint, ts);
   const orderId = Number(r.lastInsertRowid);
+  db.prepare('UPDATE orders SET benefit_snapshot_known=1 WHERE id=?').run(orderId);
   if (orderType === 'open') db.prepare('UPDATE member_cards SET created_order_id = ? WHERE id = ?').run(orderId, memberCardId);
 
   // 生成支付记录（储值支付同步扣余额）
   for (const p of pays) {
     let sourceCardId = null;
     // 目标储值卡不能支付自己的开卡、续费或充值订单，否则会形成“先入账再扣款”的虚假收入。
-    if (p.pay_method === 'stored') sourceCardId = deductStored(member.id, money(p.amount), memberCardId).id;
+    if (p.pay_method === 'stored') sourceCardId = deductStored(member.id, money(p.amount), memberCardId, p.source_card_id).id;
     db.prepare('INSERT INTO payments(order_id, source_card_id, pay_method, amount, transaction_no, paid_at, staff_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(orderId, sourceCardId, p.pay_method, money(p.amount), p.transaction_no || null, ts, staff.id);
   }
@@ -289,21 +290,24 @@ function refundApply({ params, body, req }) {
   if (!o) return fail(404, '订单不存在');
   if (req.user.role === 'frontdesk' && Number(o.staff_id) !== Number(req.user.id)) return fail(403, '前台只能为本人订单申请退款');
   if (!['open', 'renew', 'recharge'].includes(o.order_type)) return fail(400, '该订单不可退款');
-  if (!['paid', 'partial_refund'].includes(o.status)) return fail(400, '该订单状态不可退款');
   const requestId = String(body.request_id || '').trim() || null;
-  const fingerprint = requestHash('refund', body);
+  let fingerprint;
+  try { fingerprint = requestHash('refund', { ...body, original_order_id: o.id }); } catch (e) { return fail(e.status || 400, e.message); }
   if (requestId && requestId.length > 100) return fail(400, '请求编号格式无效');
   if (requestId) {
     const existing = db.prepare("SELECT * FROM orders WHERE request_id = ? AND staff_id = ? AND order_type = 'refund'").get(requestId, req.user.id);
     if (existing) {
+      if (Number(existing.original_order_id) !== Number(o.id)) return fail(409, '请求编号已用于其他原订单的退款');
       if (existing.request_hash && existing.request_hash !== fingerprint) return fail(409, '请求编号已用于其他退款申请，请刷新后重试');
       return ok({ refund: decorateOrder(existing), repeated: true });
     }
   }
+  if (!['paid', 'partial_refund'].includes(o.status)) return fail(400, '该订单状态不可退款');
   // 待审批的退款也占用额度，避免同一订单重复提交全额退款。
   const max = money(Number(o.paid_amount) - alreadyRefunded(o.id) - pendingRefunded(o.id));
   if (max <= 0) return fail(400, '该订单已无可退金额');
-  const amount = body.amount === undefined || body.amount === '' || body.amount === null ? max : money(Number(body.amount));
+  let amount;
+  try { amount = body.amount === undefined || body.amount === '' || body.amount === null ? max : cents(body.amount, '退款金额') / 100; } catch (e) { return fail(e.status || 400, e.message); }
   if (!(amount > 0)) return fail(400, '退款金额无效');
   if (amount > max + 0.001) return fail(400, `退款金额不能超过可退金额 ${max}`);
   const reason = (body.reason || '').trim();
@@ -323,8 +327,8 @@ function refunds({ query }) {
   const args = [];
   const status = query.get('status');
   if (status) { where.push('o.status = ?'); args.push(status); }
-  const rows = db.prepare('SELECT o.* FROM orders o WHERE ' + where.join(' AND ') + ' ORDER BY o.id DESC LIMIT 500').all(...args);
-  return ok({ list: rows.map(decorateOrder) });
+  const page = paginate('SELECT o.* FROM orders o WHERE ' + where.join(' AND ') + ' ORDER BY o.id DESC', args, query);
+  return ok({ ...page, list: page.list.map(decorateOrder) });
 }
 
 // 审批通过
@@ -333,7 +337,13 @@ function refundApprove({ params, body, req }) {
   try {
   const r = orderById(params.id);
   if (!r || r.order_type !== 'refund') throw httpError(404, '退款单不存在');
+  if (r.status === 'paid') {
+    const original = orderById(r.original_order_id);
+    db.exec('COMMIT');
+    return ok({ refund: decorateOrder(r), original_status: original && original.status, repeated: true });
+  }
   if (r.status !== 'pending') throw httpError(400, '该退款单已处理');
+  ensureBusinessOpen();
   // 老板承担最终退款责任，可以自审；前台和财务仍必须由其他有权账号审批，超管可处理全部退款。
   if (Number(r.staff_id) === Number(req.user.id) && !['admin', 'boss'].includes(req.user.role)) throw httpError(403, '退款申请人与审批人不能是同一账号');
   const o = orderById(r.original_order_id);
@@ -346,9 +356,16 @@ function refundApprove({ params, body, req }) {
 
   // 必须先确认对应权益能够完整收回，再生成退款支付流水。
   const card = o.member_card_id ? refreshFrozenCard(db.prepare('SELECT * FROM member_cards WHERE id = ?').get(o.member_card_id)) : null;
+  if (card && !o.benefit_snapshot_known && (
+    (['month', 'year'].includes(card.card_type) && !(o.benefit_days > 0)) ||
+    (card.card_type === 'count' && !(o.benefit_uses > 0)) ||
+    (card.card_type === 'stored' && !(o.benefit_amount > 0))
+  )) {
+    throw httpError(400, '历史订单缺少权益快照，请人工核算后处理退款');
+  }
   if (card && Number(card.member_id) !== Number(o.member_id)) throw httpError(400, '该会员卡已转给其他会员，不能直接退款；请先处理转卡关系');
   const delta = entitlementDelta(o, amount);
-  const full = Math.abs(Number(o.paid_amount) - delta.totalAfter) <= 0.01;
+  const full = Math.round(Number(o.paid_amount) * 100) === Math.round(delta.totalAfter * 100);
   if (full && o.order_type === 'open') {
     const laterOrder = db.prepare("SELECT id FROM orders WHERE member_card_id = ? AND id != ? AND order_type IN ('open','renew','recharge') AND status IN ('paid','partial_refund') AND id > ?").get(card && card.id, o.id, o.id);
     if (laterOrder) throw httpError(400, '该开卡后已有后续业务，不能直接全额退款；请先处理后续订单');
@@ -383,7 +400,8 @@ function refundApprove({ params, body, req }) {
           ? db.prepare("SELECT * FROM member_cards WHERE id = ? AND member_id = ? AND card_type = 'stored'").get(p.source_card_id, o.member_id)
           : db.prepare("SELECT * FROM member_cards WHERE member_id = ? AND card_type = 'stored' AND status IN ('normal','frozen') ORDER BY id").get(o.member_id);
         if (!card) throw httpError(400, '原储值卡不存在，无法安全退款');
-        db.prepare('UPDATE member_cards SET balance = balance + ?, updated_at = ? WHERE id = ?').run(amt, ts, card.id);
+        if (!['normal', 'frozen'].includes(card.status)) throw httpError(400, '原储值卡已作废、退款或过期，无法原路退回，请核实退款方式');
+        db.prepare('UPDATE member_cards SET balance = ROUND(balance + ?, 2), updated_at = ? WHERE id = ?').run(amt, ts, card.id);
       }
       remaining = money(remaining - amt);
     }
@@ -396,7 +414,7 @@ function refundApprove({ params, body, req }) {
       db.prepare("UPDATE member_cards SET status = 'refunded', remaining_uses = 0, balance = 0, updated_at = ? WHERE id = ?").run(ts, card.id);
     } else {
       if (delta.uses > 0) db.prepare('UPDATE member_cards SET remaining_uses = remaining_uses - ?, updated_at = ? WHERE id = ?').run(delta.uses, ts, card.id);
-      if (delta.amount > 0) db.prepare('UPDATE member_cards SET balance = balance - ?, updated_at = ? WHERE id = ?').run(delta.amount, ts, card.id);
+      if (delta.amount > 0) db.prepare('UPDATE member_cards SET balance = ROUND(balance - ?, 2), updated_at = ? WHERE id = ?').run(delta.amount, ts, card.id);
       if (delta.days > 0) db.prepare('UPDATE member_cards SET end_at = ?, updated_at = ? WHERE id = ?').run(addDays(card.end_at, -delta.days), ts, card.id);
     }
   }
@@ -408,7 +426,7 @@ function refundApprove({ params, body, req }) {
   db.prepare("UPDATE orders SET status = 'paid', approved_by = ?, approved_at = ?, shift_id = ? WHERE id = ?")
     .run(req.user.id, ts, activeRefundShift ? activeRefundShift.id : null, r.id);
   const newRefunded = money(alreadyRefunded(o.id));
-  const origStatus = Math.abs(Number(o.paid_amount) - newRefunded) <= 0.01 ? 'refunded' : 'partial_refund';
+  const origStatus = Math.round(Number(o.paid_amount) * 100) === Math.round(newRefunded * 100) ? 'refunded' : 'partial_refund';
   db.prepare('UPDATE orders SET status = ? WHERE id = ?').run(origStatus, o.id);
 
   audit.record({ req, action: '退款审批通过', target_type: 'order', target_id: r.id, after: { original_order_id: o.id, amount, method } });
@@ -432,4 +450,4 @@ function refundReject({ params, body, req }) {
   return ok({});
 }
 
-module.exports = { list, get, create, refundApply, refunds, refundApprove, refundReject };
+module.exports = { list, get, create, refundApply: atomic(refundApply), refunds, refundApprove, refundReject: atomic(refundReject) };

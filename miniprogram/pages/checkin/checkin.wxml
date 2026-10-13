@@ -6,6 +6,7 @@
       <view class="field" style="flex:1;margin-right:12rpx"><view class="field-label">通道号</view><input class="input" value="{{gate_no}}" data-key="gate_no" bindinput="onInput" /></view>
       <view class="field" style="flex:1"><view class="field-label">同行人数</view><input class="input" type="number" value="{{people}}" data-key="people" bindinput="onInput" /></view>
     </view>
+    <view>月卡、年卡仅限持卡会员本人 1 人使用，核销前请核对本人身份。</view>
     <button class="btn btn-primary" bindtap="submit">核销入场</button>
   </view>
 
