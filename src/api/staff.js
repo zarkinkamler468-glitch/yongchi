@@ -49,8 +49,9 @@ function update({ params, body, req }) {
   const username = body.username === undefined ? u.username : String(body.username || '').trim();
   if (!username || username.length > 50 || !/^[A-Za-z0-9_.-]+$/.test(username)) return fail(400, '登录账号格式无效');
   if (db.prepare('SELECT id FROM staff WHERE username = ? AND id != ?').get(username, u.id)) return fail(400, '账号已存在');
-  const role = ROLES.includes(body.role) ? body.role : 'frontdesk';
-  const status = body.status === 'inactive' ? 'inactive' : 'active';
+  // 缺省字段必须保留原值：编辑资料不能隐式启用停用账号或把角色降为前台。
+  const role = body.role == null ? u.role : (ROLES.includes(body.role) ? body.role : 'frontdesk');
+  const status = body.status == null ? u.status : (body.status === 'inactive' ? 'inactive' : 'active');
   const isSelf = req.user && Number(req.user.id) === Number(u.id);
   const isAdminOp = req.user && req.user.role === 'admin';
   // 仅超管可管理超管账号、或把账号改为/改出超管

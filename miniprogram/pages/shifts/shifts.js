@@ -11,7 +11,7 @@ Page({
   load() {
     Promise.all([request('/api/shifts/current'), request('/api/shifts')]).then(([c, l]) => {
       this.setData({
-        current: c.shift,
+        current: c.shift ? { ...c.shift, startedText: fmtDateTime(c.shift.started_at) } : null,
         list: l.list.map((s) => ({
           ...s, startedText: fmtDateTime(s.started_at), endedText: s.ended_at ? fmtDateTime(s.ended_at) : '—',
           statusText: s.status === 'active' ? '进行中' : '已交班',
@@ -37,7 +37,8 @@ Page({
     request('/api/shifts/' + id).then((d) => {
       this.setData({
         showClose: true, closeId: id, summary: d.summary,
-        actualCash: d.summary ? String(d.summary.cash_should) : '', note: '', diff: '0.00'
+        // 不预填应交金额：必须实际清点后录入，否则差额永远是 0。
+        actualCash: '', note: '', diff: '—'
       });
     }).catch((e) => toast(e.message));
   },
@@ -49,12 +50,14 @@ Page({
   calcDiff() {
     const s = this.data.summary;
     if (!s) return;
+    if (String(this.data.actualCash).trim() === '') { this.setData({ diff: '—' }); return; }
     const actual = Number(this.data.actualCash) || 0;
     const diff = Math.round((actual - s.cash_should) * 100) / 100;
     this.setData({ diff: (diff >= 0 ? '+' : '') + fmtMoney(diff).replace('¥', '') });
   },
   confirmClose() {
     if (this.data.submitting) return;
+    if (String(this.data.actualCash).trim() === '') { toast('请先清点现金并填写实点金额'); return; }
     this.setData({ submitting: true });
     request('/api/shifts/' + this.data.closeId + '/close', { data: { actual_cash: this.data.actualCash, note: this.data.note } })
       .then(() => { toast('已交班', 'success'); this.setData({ submitting: false, showClose: false }); this.load(); })

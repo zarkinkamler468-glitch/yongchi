@@ -1,9 +1,9 @@
 <view class="page">
   <view class="stat-grid" wx:if="{{stats}}">
-    <view class="stat"><view class="stat-label">今日收入</view><view class="stat-value num">{{stats.today_income}}</view></view>
+    <view class="stat" wx:if="{{stats.canFinance}}"><view class="stat-label">今日收入</view><view class="stat-value num">{{stats.today_income}}</view></view>
     <view class="stat"><view class="stat-label">今日入场</view><view class="stat-value num">{{stats.today_entries}}</view></view>
     <view class="stat"><view class="stat-label">即将到期卡</view><view class="stat-value num">{{stats.expiring}}</view></view>
-    <view class="stat"><view class="stat-label">今日开卡续费充值</view><view class="stat-value num" style="font-size:28rpx">{{stats.today_gross}}</view></view>
+    <view class="stat" wx:if="{{stats.canFinance}}"><view class="stat-label">今日开卡续费充值</view><view class="stat-value num" style="font-size:28rpx">{{stats.today_gross}}</view></view>
   </view>
 
   <view class="card">

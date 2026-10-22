@@ -2,28 +2,33 @@ const { request, toast } = require('../../utils/request');
 const { fmtMoney, fmtNum } = require('../../utils/util');
 
 Page({
-  data: { user: null, stats: null, recent: [], canShift: false, showShiftReminder: false, startingShift: false },
+  data: { user: null, stats: null, recent: [], canShift: false, canCashier: false, canMember: false, showShiftReminder: false, startingShift: false },
   onShow() { this.setData({ user: wx.getStorageSync('user') || null }); this.load(); },
   load() {
     request('/api/dashboard').then((d) => {
-      const max = Math.max(1, ...d.recent.map((r) => r.income));
+      const canFinance = d.can_view_finance !== false;
+      const values = d.recent.map((r) => canFinance ? Number(r.income || 0) : Number(r.entries || 0));
+      const max = Math.max(1, ...values);
       const user = wx.getStorageSync('user') || {};
       const canShift = ['boss', 'frontdesk', 'admin'].includes(user.role);
+      const canFront = ['boss', 'frontdesk', 'admin'].includes(user.role);
       this.setData({
-        canShift, showShiftReminder: canShift && !d.current_shift,
+        canFinance,
+        canShift, canCashier: canFront, canMember: canFront, showShiftReminder: canShift && !d.current_shift,
         stats: {
-          today_income: fmtMoney(d.today_income),
-          today_open: fmtMoney(d.today_open),
-          today_renew: fmtMoney(d.today_renew),
-          today_recharge: fmtMoney(d.today_recharge),
-          today_refund: fmtMoney(d.today_refund),
+          canFinance,
+          today_income: canFinance ? fmtMoney(d.today_income) : '',
+          today_open: canFinance ? fmtMoney(d.today_open) : '',
+          today_renew: canFinance ? fmtMoney(d.today_renew) : '',
+          today_recharge: canFinance ? fmtMoney(d.today_recharge) : '',
+          today_refund: canFinance ? fmtMoney(d.today_refund) : '',
           today_entries: fmtNum(d.today_entries),
           expiring_cards: d.expiring_cards,
           low_balance_members: d.low_balance_members,
           blacklist_count: d.blacklist_count,
           shift_started: !canShift || !!d.current_shift
         },
-        recent: d.recent.map((r) => ({ ...r, label: r.date.slice(5), h: Math.round((r.income / max) * 100) }))
+        recent: d.recent.map((r, i) => ({ ...r, label: r.date.slice(5), h: Math.round((values[i] / max) * 100) }))
       });
     }).catch((e) => toast(e.message));
   },

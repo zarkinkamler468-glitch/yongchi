@@ -33,7 +33,7 @@ function buildRouter() {
   get('/api/auth/captcha', auth.captcha);
   get('/api/auth/captcha-image', auth.captchaImage);
   get('/api/public-config', settings.publicConfig);
-  post('/api/auth/login', auth.login, { action: '登录系统', module: 'auth' });
+  post('/api/auth/login', auth.login, { action: '登录系统', module: 'auth', audit: false });
   post('/api/auth/wxlogin', auth.wxLogin, { action: '微信登录', module: 'auth' });
   post('/api/auth/wxbind', auth.wxBind, { action: '微信绑定员工', module: 'auth' });
   post('/api/auth/wxunbind', auth.wxUnbind, { action: '解绑微信', module: 'auth' });

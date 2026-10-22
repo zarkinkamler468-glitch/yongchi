@@ -93,11 +93,14 @@ function close({ params, body, req }) {
   if (s.status !== 'active') return fail(400, '该班次已交班');
   if (Number(s.staff_id) !== Number(req.user.id) && !['boss', 'admin'].includes(req.user.role)) return fail(403, '只能交接自己的班次');
   const summary = shiftSummary(s.id);
+  // 交班必须清点现金：允许省略会把“没数钱”变成差额 0，交班对账失去意义。
+  if (body.actual_cash === undefined || body.actual_cash === null || String(body.actual_cash).trim() === '') {
+    return fail(400, '请清点现金并填写实点金额');
+  }
   let actualCash;
-  try { actualCash = body.actual_cash === undefined || body.actual_cash === '' ? null : cents(body.actual_cash, '实点现金') / 100; } catch (e) { return fail(400, e.message); }
-  let difference = null;
-  if (actualCash !== null) difference = money(actualCash - summary.cash_should);
-  if (difference !== null && Math.abs(difference) > 0.001 && !(body.note || '').trim()) {
+  try { actualCash = cents(body.actual_cash, '实点现金') / 100; } catch (e) { return fail(400, e.message); }
+  const difference = money(actualCash - summary.cash_should);
+  if (Math.abs(difference) > 0.001 && !(body.note || '').trim()) {
     return fail(400, '现金差额不为 0 时必须填写说明');
   }
   db.prepare("UPDATE shifts SET ended_at = ?, cash_amount = ?, actual_cash = ?, difference = ?, note = ?, status = 'closed' WHERE id = ?")

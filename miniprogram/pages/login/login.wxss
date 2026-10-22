@@ -38,7 +38,7 @@ page {
 .login-card .field { text-align: left; }
 .captcha-row { display: flex; gap: 16rpx; align-items: center; }
 .captcha-row .input { flex: 1; }
-.captcha-img { width: 220rpx; height: 76rpx; background: #fff; border-radius: 12rpx; }
+.captcha-img { width: 260rpx; height: 86rpx; background: #fff; border-radius: 12rpx; }
 .error {
   background: rgba(239, 68, 68, 0.12); color: #b91c1c;
   padding: 16rpx 20rpx; border-radius: 14rpx;

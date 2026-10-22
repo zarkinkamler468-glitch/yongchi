@@ -2,7 +2,7 @@
 
 const { db } = require('../db');
 const { now, addDays, today } = require('../util');
-const { ok } = require('../http');
+const { ok, clientIp } = require('../http');
 const { paginate } = require('./pagination');
 
 const LOG_RETAIN_DAYS = 90;
@@ -10,8 +10,7 @@ const LOG_RETAIN_DAYS = 90;
 // 记录操作日志（最小化：动作/对象/操作人/原因/IP；详情最多 200 字符）
 function record({ req, action, target_type = 'system', target_id, before, after, reason }) {
   const u = (req && req.user) || {};
-  let ip = '';
-  if (req && req.socket && req.socket.remoteAddress) ip = req.socket.remoteAddress;
+  const ip = clientIp(req);
   const compact = (v) => {
     if (v === undefined || v === null) return null;
     const s = typeof v === 'string' ? v : JSON.stringify(v);

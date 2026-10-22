@@ -5,6 +5,7 @@ function statusClass(s) { return s === 'normal' ? 'green' : s === 'blacklist' ? 
 
 Page({
   data: {
+    noPermission: false,
     keyword: '',
     statusIndex: 0,
     statuses: ['全部状态', '正常', '黑名单', '停用'],
@@ -12,7 +13,14 @@ Page({
     list: [],
     loading: false
   },
-  onShow() { this.load(); },
+  onShow() {
+    // 财务角色没有会员管理权限，直接给出说明页，避免显示“暂无匹配会员”造成误判。
+    const user = wx.getStorageSync('user') || {};
+    const allowed = ['boss', 'frontdesk', 'admin'].includes(user.role);
+    this.setData({ noPermission: !allowed });
+    if (!allowed) return;
+    this.load();
+  },
   onSearchInput(e) {
     this.setData({ keyword: e.detail.value });
     clearTimeout(this._searchTimer);

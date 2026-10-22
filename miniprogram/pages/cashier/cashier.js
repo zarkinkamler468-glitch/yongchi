@@ -3,6 +3,7 @@ const { fmtMoney, payLabel } = require('../../utils/util');
 
 Page({
   data: {
+    noPermission: false,
     mode: 'home', tab: 'open', memberMode: 'new', showMemberPicker: false, memberQuery: '', selectedMember: null, memberResults: [],
     checkinKeyword: '', checkinPeople: 1, checkinResult: null, checkinPreview: null,
     products: [], allProducts: [],
@@ -15,9 +16,16 @@ Page({
     mixedPay: false, splitCash: '', splitWechat: '', splitAlipay: '', splitStored: '', storedCards: [], storedCardIndex: 0,
     payable: '¥0',
     payAmount: '',
-    payManual: false, submitting: false, checkinSubmitting: false, requestId: '', checkinRequestId: ''
+    submitting: false, checkinSubmitting: false, requestId: '', checkinRequestId: ''
   },
-  onShow() { this.loadBase(); },
+  onShow() {
+    // 财务角色没有收银权限，直接给出说明页，避免进入后满屏 403。
+    const user = wx.getStorageSync('user') || {};
+    const allowed = ['boss', 'frontdesk', 'admin'].includes(user.role);
+    this.setData({ noPermission: !allowed });
+    if (!allowed) return;
+    this.loadBase();
+  },
   onUnload() { clearTimeout(this._memberSearchTimer); },
   loadBase() {
     request('/api/card-products').then((p) => {
@@ -36,7 +44,16 @@ Page({
   onCheckinInput(e) { if (this.data.checkinSubmitting) return; this._checkinVersion = (this._checkinVersion || 0) + 1; this.setData({ [e.currentTarget.dataset.key]: e.detail.value, checkinPreview: null, checkinResult: null }); },
   submitCheckin() {
     if (this.data.checkinSubmitting) return;
-    if (this._pendingCheckin) { this.confirmCheckin(); return; }
+    if (this._pendingCheckin) {
+      const p = this._pendingCheckin;
+      const same = p.keyword === this.data.checkinKeyword.trim()
+        && Number(p.people) === (Number(this.data.checkinPeople) || 1);
+      if (!same) {
+        this.setData({ checkinPreview: null, checkinResult: { ok: false, retry: true, error: '上一笔核销结果未确认，请先重试上一笔，确认后再为其他会员办理' } });
+        return;
+      }
+      this.confirmCheckin(); return;
+    }
     if (!this.data.checkinKeyword.trim()) { toast('请输入卡号、手机号或会员编号'); return; }
     const people = Number(this.data.checkinPeople) || 1;
     const keyword = this.data.checkinKeyword.trim();
@@ -55,6 +72,11 @@ Page({
     request('/api/entries/checkin', { data: { keyword: p.keyword, card_id: p.card && p.card.id, people: p.people, gate_no: '小程序收银', confirmed: true, request_id: rid } })
       .then((d) => { this._pendingCheckin = null; this.setData({ checkinSubmitting: false, checkinRequestId: '', checkinPreview: null, checkinResult: { ok: true, pending: false, name: d.member.name, phone: d.member.phone, card: d.card.card_name, asset: d.card.card_type === 'count' ? `核销成功，剩余 ${d.card.remaining_uses} 次` : d.card.card_type === 'stored' ? `核销成功，余额 ${d.card.balance} 元` : `核销成功，有效期至 ${d.card.end_at || '—'}` } }); })
       .catch((e) => { const rejected = e.status >= 400 && e.status < 500; if (rejected) this._pendingCheckin = null; this.setData({ checkinSubmitting: false, checkinRequestId: rejected ? '' : rid, checkinResult: { ok: false, error: e.message } }); });
+  },
+  retryPendingCheckin() {
+    if (!this._pendingCheckin) return;
+    this.setData({ checkinResult: null });
+    this.confirmCheckin();
   },
   searchMember(e) {
     const q = (e.detail.value || '').trim();
@@ -97,20 +119,33 @@ Page({
       const type = this.data.tab === 'renew' ? '' : 'stored';
       const cards = (d.list || []).filter((c) => type ? c.card_type === type : true);
       const cardOptions = cards.map((c) => ({ ...c, label: `${c.card_no} · ${c.card_name || ''} · ${c.status === 'void' ? '已作废' : c.status === 'refunded' ? '已退款' : c.status === 'frozen' ? '已冻结' : c.card_type === 'stored' ? fmtMoney(c.balance) : (c.remaining_uses || 0) + '次'}` }));
+      if (this.data.tab === 'renew') {
+        // 续费不预选卡：会员可能同时有储值卡和次卡，默认选中最新卡很容易续错。
+        const placeholder = { id: null, status: 'placeholder', label: '请选择要续费的会员卡' };
+        this.setData({ cards: [placeholder, ...cards], cardOptions: [placeholder, ...cardOptions], cardIndex: 0 });
+        this.filterRenewProducts(null);
+        return;
+      }
       const firstUsable = Math.max(0, cards.findIndex((c) => !['void', 'refunded', 'frozen'].includes(c.status)));
       this.setData({ cards, cardOptions, cardIndex: firstUsable });
       this.filterRenewProducts(cards[firstUsable]);
     }).catch(() => {});
   },
   pickProduct(e) { this.setData({ productIndex: Number(e.detail.value) }); this.compute(); },
-  pickCard(e) { const idx = Number(e.detail.value); const card = this.data.cards[idx]; if (!card) return; if (['void', 'refunded', 'frozen'].includes(card.status)) { toast('已作废、退款或冻结的卡不可办理'); return; } this.setData({ cardIndex: idx }); this.filterRenewProducts(card); },
+  pickCard(e) {
+    const idx = Number(e.detail.value);
+    const card = this.data.cards[idx];
+    if (!card || !card.id) { this.setData({ cardIndex: idx }); this.filterRenewProducts(null); return; }
+    if (['void', 'refunded', 'frozen'].includes(card.status)) { toast('已作废、退款或冻结的卡不可办理'); return; }
+    this.setData({ cardIndex: idx }); this.filterRenewProducts(card);
+  },
   filterRenewProducts(card) {
     if (this.data.tab !== 'renew') return;
-    const products = card ? this.data.allProducts.filter((p) => p.type === card.card_type) : this.data.allProducts;
+    const products = card && card.card_type ? this.data.allProducts.filter((p) => p.type === card.card_type) : [];
     this.setData({ products, productIndex: 0 }); this.compute();
   },
   onInput(e) { this.setData({ [e.currentTarget.dataset.key]: e.detail.value }); this.compute(); },
-  onAmountInput(e) { this.setData({ payAmount: e.detail.value, payManual: true }); },
+  onAmountInput(e) { this.setData({ payAmount: e.detail.value }); },
   pickPay(e) { this.setData({ payMethod: e.currentTarget.dataset.pay }); },
   toggleMixedPay(e) { this.setData({ mixedPay: e.detail.value }); },
   pickStoredCard(e) { this.setData({ storedCardIndex: Number(e.detail.value) }); },
@@ -120,30 +155,30 @@ Page({
     let total = 0;
     if (tab === 'open' || tab === 'renew') total = products[productIndex] ? Number(products[productIndex].price) : 0;
     else total = Number(amount) || 0;
-    const payable = Math.max(0, (total - (Number(discount) || 0)));
-    const patch = { payable: fmtMoney(payable) };
-    if (!this.data.payManual) patch.payAmount = payable;
-    this.setData(patch);
+    const payable = Math.max(0, Math.round((total - (Number(discount) || 0)) * 100) / 100);
+    this.setData({ payable: fmtMoney(payable), payAmount: payable });
   },
   submit() {
     if (this.data.submitting) return;
-    const { tab, selectedMember, newName, newPhone, newGender, products, productIndex, cards, cardIndex, amount, discount, payMethod, payAmount } = this.data;
+    const { tab, selectedMember, newName, newPhone, newGender, products, productIndex, cards, cardIndex, amount, discount, payMethod } = this.data;
     const memberId = selectedMember && selectedMember.id;
     const selectedCard = cards[cardIndex];
-    const payable = Number(payAmount);
-    if (!Number.isFinite(payable) || payable < 0) { toast('实收金额不能为负数'); return; }
+    const total = tab === 'recharge' ? Number(amount) : Number(products[productIndex]?.price || 0);
+    // 实收=应收：抹零通过“优惠金额”表达，支付明细合计必须与应收精确一致。
+    const payable = Math.max(0, Math.round((total - (Number(discount) || 0)) * 100) / 100);
+    if (!Number.isFinite(payable) || payable < 0) { toast('应收金额无效'); return; }
     let payments = payable > 0 ? [{ pay_method: payMethod, amount: payable }] : [];
     if (this.data.mixedPay) {
       payments = [['cash','splitCash'],['wechat','splitWechat'],['alipay','splitAlipay'],['stored','splitStored']].map(([method,key]) => ({ pay_method: method, amount: Number(this.data[key] || 0) }));
       if (payments.some(p => !Number.isFinite(p.amount) || p.amount < 0)) { toast('拆分金额必须为非负数'); return; }
       payments = payments.filter(p => p.amount > 0);
     }
-    const total = tab === 'recharge' ? Number(amount) : Number(products[productIndex]?.price || 0);
-    if (payments.reduce((n,p) => n + Math.round(p.amount*100),0) !== Math.round((total - Number(discount || 0))*100)) { toast('支付合计必须等于应收金额'); return; }
+    if (payments.reduce((n,p) => n + Math.round(p.amount*100),0) !== Math.round(payable*100)) { toast('支付合计必须等于应收金额，抹零请填写优惠金额'); return; }
     const source = this.data.storedCards[this.data.storedCardIndex];
     payments.forEach(p => { if (p.pay_method === 'stored' && source?.id) p.source_card_id = source.id; });
     if (tab === 'open' && !memberId && !newName.trim()) { toast('请选择已有会员或填写新会员姓名'); return; }
     if (['renew', 'recharge'].includes(tab) && !memberId) { toast('请先查询并选择会员'); return; }
+    if (tab === 'renew' && !(selectedCard && selectedCard.id)) { toast('请选择要续费的会员卡'); return; }
     if (['renew', 'recharge'].includes(tab) && selectedCard && ['void', 'refunded', 'frozen'].includes(selectedCard.status)) { toast('已作废、退款或冻结的卡不可办理'); return; }
     const body = {
       order_type: tab,
@@ -166,7 +201,7 @@ Page({
       this._pendingSale = null;
       wx.hideLoading();
       wx.showModal({ title: '收款成功', content: fmtMoney(d.amount), showCancel: false, confirmText: '继续' });
-      this.setData({ submitting: false, requestId: '', mixedPay: false, splitCash: '', splitWechat: '', splitAlipay: '', splitStored: '', storedCards: [], storedCardIndex: 0, memberMode: tab === 'open' ? 'new' : 'existing', memberIndex: 0, selectedMember: null, memberQuery: '', memberResults: [], newName: '', newPhone: '', newGender: 'unknown', discount: '0', payManual: false, amount: '100', cards: [], cardOptions: [], cardIndex: 0 });
+      this.setData({ submitting: false, requestId: '', mixedPay: false, splitCash: '', splitWechat: '', splitAlipay: '', splitStored: '', storedCards: [], storedCardIndex: 0, memberMode: tab === 'open' ? 'new' : 'existing', memberIndex: 0, selectedMember: null, memberQuery: '', memberResults: [], newName: '', newPhone: '', newGender: 'unknown', discount: '0', amount: '100', cards: [], cardOptions: [], cardIndex: 0 });
       this.loadBase();
     }).catch((e) => { wx.hideLoading(); const rejected = e.status >= 400 && e.status < 500; if (rejected) this._pendingSale = null; this.setData({ submitting: false, requestId: rejected ? '' : rid }); toast(e.message); });
   }

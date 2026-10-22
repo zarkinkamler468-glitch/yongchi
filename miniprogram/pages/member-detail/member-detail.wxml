@@ -19,7 +19,7 @@
         <view class="ci-name">{{item.card_name || item.typeText}} · {{item.card_no}}</view>
         <view class="badge badge-{{item.statusClass}}">{{item.statusText}}</view>
       </view>
-      <view class="ci-sub">{{item.assetText}}{{item.end_at ? ' · 有效期至 ' + item.end_at : ''}}</view>
+      <view class="ci-sub">{{item.assetText}}{{item.extraText}}</view>
       <button class="btn btn-sm" wx:if="{{item.canRecharge}}" data-id="{{item.id}}" bindtap="openRecharge" style="margin-top:10rpx">充值</button>
     </view>
     <view class="empty" wx:if="{{!cards.length}}">暂无会员卡</view>

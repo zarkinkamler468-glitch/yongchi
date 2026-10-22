@@ -102,7 +102,9 @@ function list({ query }) {
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
     ORDER BY e.id DESC
   `;
-  return ok(paginate(sql, args, query));
+  const page = paginate(sql, args, query);
+  // 内部幂等字段不下发客户端。
+  return ok({ ...page, list: page.list.map(({ request_id, request_hash, ...rest }) => rest) });
 }
 
 // POST /api/entries/checkin  入场核销
@@ -211,7 +213,9 @@ function checkin({ body, req }) {
   db.exec('COMMIT');
 
   const detail = chargeType === 'count' ? `入场核销，扣减${deductedUses}次，剩余${refreshedCard.remaining_uses}次` : chargeType === 'stored' ? `入场核销，扣减${deductedAmount}元，余额${refreshedCard.balance}元` : '入场核销成功';
-  sms.accountChange(member, '入场核销', detail);
+  // 同一天同一会员只发首条入场通知，避免每次核销都产生短信费用；当前记录已入库，计数为 1 即首条。
+  const todayEntries = db.prepare("SELECT COUNT(*) AS n FROM entries WHERE member_id = ? AND result = 'success' AND entry_at >= ?").get(member.id, today()).n;
+  if (todayEntries === 1) sms.accountChange(member, '入场核销', detail);
 
   return ok({
     member: { id: member.id, name: member.name, member_no: member.member_no, phone: member.phone, status: member.status },

@@ -24,7 +24,7 @@
       </view>
       <view class="field">
         <view class="field-label">验证码</view>
-        <view class="captcha-row"><input class="input" value="{{captchaCode}}" data-key="captchaCode" bindinput="onInput" placeholder="验证码" maxlength="4" /><image class="captcha-img" src="{{captchaSrc}}" mode="aspectFit" bindtap="loadCaptcha" /></view>
+        <view class="captcha-row"><input class="input" value="{{captchaCode}}" data-key="captchaCode" bindinput="onInput" placeholder="验证码" maxlength="6" /><image class="captcha-img" src="{{captchaSrc}}" mode="aspectFit" bindtap="loadCaptcha" /></view>
       </view>
       <button class="btn login-btn" bindtap="pwdLogin" disabled="{{loading}}">账号密码登录</button>
     </block>

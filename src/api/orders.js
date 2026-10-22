@@ -88,6 +88,12 @@ function decorateOrder(o) {
   return { ...o, business_at: businessAt, member_name: m ? m.name : '—', member_no: m ? m.member_no : '', card_no: card ? card.card_no : '', staff_name: s ? s.real_name : '' };
 }
 
+// 内部幂等字段不下发给客户端；列表页也不需要 64 位哈希。
+function publicOrder(o) {
+  const { request_id, request_hash, ...rest } = decorateOrder(o);
+  return rest;
+}
+
 // 扣减储值余额（支付方式为“储值”时）
 function deductStored(memberId, amount, excludeCardId, sourceCardId) {
   const cards = db.prepare("SELECT * FROM member_cards WHERE member_id = ? AND card_type = 'stored' ORDER BY id").all(memberId);
@@ -132,9 +138,17 @@ function list({ query, req }) {
   if (from) { where.push(businessTime + ' >= ?'); args.push(from); }
   const to = query.get('to');
   if (to) { where.push(businessTime + ' <= ?'); args.push(to + 'T23:59:59'); }
-  const sql = 'SELECT o.* FROM orders o LEFT JOIN members m ON m.id = o.member_id' + (where.length ? ' WHERE ' + where.join(' AND ') : '') + ' ORDER BY o.id DESC';
+  // 会员、卡号、操作员一次 JOIN 取回，避免列表逐条回查（N+1）。
+  const sql = `SELECT o.*, m.name AS member_name, m.member_no,
+      mc.card_no, s.real_name AS staff_name,
+      CASE WHEN o.order_type = 'refund' AND o.status = 'paid' THEN COALESCE(o.approved_at, o.created_at) ELSE o.created_at END AS business_at
+    FROM orders o
+    LEFT JOIN members m ON m.id = o.member_id
+    LEFT JOIN member_cards mc ON mc.id = o.member_card_id
+    LEFT JOIN staff s ON s.id = o.staff_id`
+    + (where.length ? ' WHERE ' + where.join(' AND ') : '') + ' ORDER BY o.id DESC';
   const page = paginate(sql, args, query);
-  return ok({ ...page, list: page.list.map(decorateOrder) });
+  return ok({ ...page, list: page.list.map(({ request_id, request_hash, ...rest }) => rest) });
 }
 
 function get({ params, req }) {
@@ -142,7 +156,7 @@ function get({ params, req }) {
   if (!o) return fail(404, '订单不存在');
   if (req.user.role === 'frontdesk' && Number(o.staff_id) !== Number(req.user.id)) return fail(403, '前台只能查看本人订单');
   const payments = db.prepare('SELECT * FROM payments WHERE order_id = ? ORDER BY id').all(o.id);
-  return ok({ order: decorateOrder(o), payments });
+  return ok({ order: publicOrder(o), payments });
 }
 
 // ------------------------- 收银开单（开卡/续费/储值充值） -------------------------
@@ -151,19 +165,21 @@ function create({ body, req }) {
   // 开卡、权益变更、支付记录必须作为一个原子操作；任一步失败都不能留下卡余额或次数。
   db.exec('BEGIN IMMEDIATE');
   try {
-  const requestId = String(body.request_id || '').trim() || null;
-  const fingerprint = requestHash(body.order_type, body);
-  if (requestId && requestId.length > 100) throw httpError(400, '请求编号格式无效');
-  if (requestId) {
-    const existing = db.prepare("SELECT * FROM orders WHERE request_id = ? AND staff_id = ? AND order_type IN ('open','renew','recharge')").get(requestId, req.user.id);
-    if (existing) {
-      if (existing.request_hash && existing.request_hash !== fingerprint) throw httpError(409, '请求编号已用于其他收银操作，请刷新后重试');
-      db.exec('COMMIT');
-      return ok({ order: decorateOrder(existing), order_no: existing.order_no, amount: existing.paid_amount, repeated: true });
-    }
-  }
   const orderType = body.order_type;
   if (!['open', 'renew', 'recharge'].includes(orderType)) throw httpError(400, '无效的业务类型');
+  const requestId = String(body.request_id || '').trim() || null;
+  const fingerprint = requestHash(orderType, body);
+  if (requestId && requestId.length > 100) throw httpError(400, '请求编号格式无效');
+  if (requestId) {
+    // request_id 在员工维度全局唯一；先按任意类型查找，再判断类型与指纹，避免唯一索引冲突变成 500。
+    const existing = db.prepare('SELECT * FROM orders WHERE request_id = ? AND staff_id = ?').get(requestId, req.user.id);
+    if (existing) {
+      if (existing.order_type !== orderType) throw httpError(409, '请求编号已用于其他业务类型，请刷新后重试');
+      if (existing.request_hash && existing.request_hash !== fingerprint) throw httpError(409, '请求编号已用于其他收银操作，请刷新后重试');
+      db.exec('COMMIT');
+      return ok({ order: publicOrder(existing), order_no: existing.order_no, amount: existing.paid_amount, repeated: true });
+    }
+  }
   ensureBusinessOpen();
   const member = resolveMember(body);
   if (member.status === 'blacklist') throw httpError(400, '黑名单会员禁止办卡、续费');
@@ -276,7 +292,7 @@ function create({ body, req }) {
   const eventLabel = orderType === 'open' ? '开卡成功' : orderType === 'renew' ? '续费成功' : '储值充值';
   const changeDetail = orderType === 'recharge' ? `充值${total}元` : `${eventLabel}，实付${payable}元`;
   sms.accountChange(member, eventLabel, changeDetail);
-  return ok({ order: decorateOrder(orderById(orderId)), order_no: orderNo, amount: payable }, 201);
+  return ok({ order: publicOrder(orderById(orderId)), order_no: orderNo, amount: payable }, 201);
   } catch (e) {
     return rollbackError(e);
   }
@@ -295,11 +311,13 @@ function refundApply({ params, body, req }) {
   try { fingerprint = requestHash('refund', { ...body, original_order_id: o.id }); } catch (e) { return fail(e.status || 400, e.message); }
   if (requestId && requestId.length > 100) return fail(400, '请求编号格式无效');
   if (requestId) {
-    const existing = db.prepare("SELECT * FROM orders WHERE request_id = ? AND staff_id = ? AND order_type = 'refund'").get(requestId, req.user.id);
+    // 与收银共用 (staff_id, request_id) 唯一索引，先按任意类型查找，避免跨类型冲突变成 500。
+    const existing = db.prepare('SELECT * FROM orders WHERE request_id = ? AND staff_id = ?').get(requestId, req.user.id);
     if (existing) {
+      if (existing.order_type !== 'refund') return fail(409, '请求编号已用于其他业务类型');
       if (Number(existing.original_order_id) !== Number(o.id)) return fail(409, '请求编号已用于其他原订单的退款');
       if (existing.request_hash && existing.request_hash !== fingerprint) return fail(409, '请求编号已用于其他退款申请，请刷新后重试');
-      return ok({ refund: decorateOrder(existing), repeated: true });
+      return ok({ refund: publicOrder(existing), repeated: true });
     }
   }
   if (!['paid', 'partial_refund'].includes(o.status)) return fail(400, '该订单状态不可退款');
@@ -318,7 +336,7 @@ function refundApply({ params, body, req }) {
     VALUES (?, 'refund', ?, ?, ?, ?, ?, 0, 'pending', ?, ?, ?, ?, ?)`)
     .run(nextOrderNo(), o.member_id, o.member_card_id, o.id, amount, amount, req.user.id, reason, requestId, fingerprint, ts);
   audit.record({ req, action: '退款申请', target_type: 'order', target_id: Number(r.lastInsertRowid), after: { original_order_id: o.id, amount, reason } });
-  return ok({ refund: decorateOrder(orderById(Number(r.lastInsertRowid))) }, 201);
+  return ok({ refund: publicOrder(orderById(Number(r.lastInsertRowid))) }, 201);
 }
 
 // 退款单列表（审批用）
@@ -328,7 +346,7 @@ function refunds({ query }) {
   const status = query.get('status');
   if (status) { where.push('o.status = ?'); args.push(status); }
   const page = paginate('SELECT o.* FROM orders o WHERE ' + where.join(' AND ') + ' ORDER BY o.id DESC', args, query);
-  return ok({ ...page, list: page.list.map(decorateOrder) });
+  return ok({ ...page, list: page.list.map(publicOrder) });
 }
 
 // 审批通过
@@ -340,7 +358,7 @@ function refundApprove({ params, body, req }) {
   if (r.status === 'paid') {
     const original = orderById(r.original_order_id);
     db.exec('COMMIT');
-    return ok({ refund: decorateOrder(r), original_status: original && original.status, repeated: true });
+    return ok({ refund: publicOrder(r), original_status: original && original.status, repeated: true });
   }
   if (r.status !== 'pending') throw httpError(400, '该退款单已处理');
   ensureBusinessOpen();
@@ -419,10 +437,10 @@ function refundApprove({ params, body, req }) {
     }
   }
 
-  // 退款按审批通过时间进入日报和报表。仅当审批人原本已有活动班次时才归班；
-  // 财务不参与班次，且绝不回写已经关闭的原销售班次。
-  const activeRefundShift = req.user.role === 'finance' ? null
-    : db.prepare("SELECT id FROM shifts WHERE staff_id = ? AND status = 'active'").get(req.user.id);
+  // 退款现金必须有归属：优先审批人当前班次；审批人（财务、老板）没有班次时，
+  // 归到退款申请人的进行中班次（通常是收银前台的钱箱），两者都没有才留空。
+  const activeRefundShift = db.prepare("SELECT id FROM shifts WHERE staff_id = ? AND status = 'active'").get(req.user.id)
+    || db.prepare("SELECT id FROM shifts WHERE staff_id = ? AND status = 'active'").get(r.staff_id);
   db.prepare("UPDATE orders SET status = 'paid', approved_by = ?, approved_at = ?, shift_id = ? WHERE id = ?")
     .run(req.user.id, ts, activeRefundShift ? activeRefundShift.id : null, r.id);
   const newRefunded = money(alreadyRefunded(o.id));
@@ -433,7 +451,7 @@ function refundApprove({ params, body, req }) {
   db.exec('COMMIT');
   const refundMember = db.prepare('SELECT * FROM members WHERE id = ?').get(o.member_id);
   sms.accountChange(refundMember, '退款成功', `退款${amount}元，原订单${o.order_no}`);
-  return ok({ refund: decorateOrder(orderById(r.id)), original_status: origStatus });
+  return ok({ refund: publicOrder(orderById(r.id)), original_status: origStatus });
   } catch (e) {
     return rollbackError(e);
   }

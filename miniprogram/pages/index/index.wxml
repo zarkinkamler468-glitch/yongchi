@@ -9,21 +9,22 @@
   </view>
 
   <view class="stat-grid" wx:if="{{stats}}">
-    <view class="stat"><view class="stat-label">今日收入</view><view class="stat-value num">{{stats.today_income}}</view></view>
-    <view class="stat"><view class="stat-label">开卡/续费/充值</view><view class="stat-value num" style="font-size:28rpx">{{stats.today_open}}/{{stats.today_renew}}/{{stats.today_recharge}}</view></view>
-    <view class="stat"><view class="stat-label">退款 / 入场</view><view class="stat-value num" style="font-size:28rpx">{{stats.today_refund}} / {{stats.today_entries}}</view></view>
+    <view class="stat" wx:if="{{stats.canFinance}}"><view class="stat-label">今日收入</view><view class="stat-value num">{{stats.today_income}}</view></view>
+    <view class="stat" wx:if="{{stats.canFinance}}"><view class="stat-label">开卡/续费/充值</view><view class="stat-value num" style="font-size:28rpx">{{stats.today_open}}/{{stats.today_renew}}/{{stats.today_recharge}}</view></view>
+    <view class="stat" wx:if="{{stats.canFinance}}"><view class="stat-label">退款 / 入场</view><view class="stat-value num" style="font-size:28rpx">{{stats.today_refund}} / {{stats.today_entries}}</view></view>
+    <view class="stat" wx:if="{{!stats.canFinance}}"><view class="stat-label">今日入场</view><view class="stat-value num">{{stats.today_entries}}</view></view>
     <view class="stat"><view class="stat-label">到期/低余额/黑名单</view><view class="stat-value num" style="font-size:28rpx">{{stats.expiring_cards}}/{{stats.low_balance_members}}/{{stats.blacklist_count}}</view></view>
   </view>
 
   <view class="quick">
-    <view class="quick-item" bindtap="goCashier"><view class="quick-ico qi-cash"></view><text>收银</text></view>
-    <view class="quick-item" bindtap="goCheckin"><view class="quick-ico qi-check"></view><text>核销</text></view>
-    <view class="quick-item" bindtap="goMembers"><view class="quick-ico qi-member"></view><text>会员</text></view>
+    <view class="quick-item" wx:if="{{canCashier}}" bindtap="goCashier"><view class="quick-ico qi-cash"></view><text>收银</text></view>
+    <view class="quick-item" wx:if="{{canMember}}" bindtap="goCheckin"><view class="quick-ico qi-check"></view><text>核销</text></view>
+    <view class="quick-item" wx:if="{{canMember}}" bindtap="goMembers"><view class="quick-ico qi-member"></view><text>会员</text></view>
     <view class="quick-item" wx:if="{{canShift}}" bindtap="goShifts"><view class="quick-ico qi-shift"></view><text>交班</text></view>
   </view>
 
-  <view class="card">
-    <view class="card-title">近 14 天收入趋势</view>
+  <view class="card" wx:if="{{stats}}">
+    <view class="card-title">{{stats.canFinance ? '近 14 天收入趋势' : '近 14 天入场趋势'}}</view>
     <view class="chart">
       <view class="bar-col" wx:for="{{recent}}" wx:key="date">
         <view class="bar-wrap"><view class="bar" style="height: {{item.h}}%"></view></view>

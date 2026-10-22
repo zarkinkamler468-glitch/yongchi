@@ -19,7 +19,7 @@ function fmtMoney(n) {
   const s = fixed.toFixed(2);
   const parts = s.split('.');
   const int = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  const dec = parts[1] === '00' ? '' : '.' + parts[1].replace(/0$/, '');
+  const dec = '.' + parts[1];
   return sign + '¥' + int + dec;
 }
 function fmtDateTime(s) { return (s || '').replace('T', ' ').slice(0, 16); }

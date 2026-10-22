@@ -249,7 +249,7 @@ test('跨日退款按审批日导出，负向实付金额正确', () => {
   assert.ok(orders.list({ query: q, req: req('boss') }).body.list.some(x => x.id === r.id));
   const csv = reports.exportOrders({ query: q }).body.csv;
   const line = csv.split('\n').find(x => x.startsWith(r.order_no + ','));
-  assert.ok(line); assert.match(line, /,'-10,/); assert.ok(line.endsWith(today() + line.slice(line.lastIndexOf('T'))));
+  assert.ok(line); assert.match(line, /,-10,/); assert.ok(line.endsWith(today() + line.slice(line.lastIndexOf('T'))));
 });
 
 test('已停用员工历史销售退款仍计入当天绩效', () => {

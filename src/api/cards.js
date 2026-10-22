@@ -64,17 +64,30 @@ function listProducts() {
   return ok({ list: rows });
 }
 
+// 卡项字段按卡种归一：次卡只保留次数，储值卡只保留余额/扣费，期限卡只保留天数。
+// 这样开卡时不会把无关字段复制到会员卡，产生看不到也用不掉的余额或次数。
+function productFields(body) {
+  const type = body.type;
+  return {
+    duration_days: type === 'stored' ? 0 : (Number(body.duration_days) || 0),
+    total_uses: type === 'count' ? (Number(body.total_uses) || 0) : 0,
+    stored_value: type === 'stored' ? money(body.stored_value) : 0,
+    entry_fee: type === 'stored' ? money(body.entry_fee) : 0
+  };
+}
+
 function createProduct({ body }) {
   const name = (body.name || '').trim();
   if (!name) return fail(400, '卡项名称不能为空');
   if (name.length > 100) return fail(400, '卡项名称不能超过 100 个字');
+  if (db.prepare('SELECT id FROM card_products WHERE name = ?').get(name)) return fail(400, '卡项名称已存在');
   if (!CARD_TYPES.includes(body.type)) return fail(400, '无效的卡种类型');
   const validation = validateProduct(body); if (validation) return validation;
   const ts = now();
+  const f = productFields(body);
   const r = db.prepare(`INSERT INTO card_products(name, type, price, duration_days, total_uses, stored_value, entry_fee, freeze_allowed, transfer_allowed, extension_allowed, enabled, note, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(name, body.type, money(body.price), Number(body.duration_days) || 0, Number(body.total_uses) || 0,
-      money(body.stored_value), money(body.entry_fee),
+    .run(name, body.type, money(body.price), f.duration_days, f.total_uses, f.stored_value, f.entry_fee,
       body.freeze_allowed ? 1 : 0, body.transfer_allowed ? 1 : 0, body.extension_allowed ? 1 : 0,
       body.enabled === undefined ? 1 : (body.enabled ? 1 : 0), (body.note || '').trim() || null, ts, ts);
   return ok({ product: db.prepare('SELECT * FROM card_products WHERE id = ?').get(Number(r.lastInsertRowid)) }, 201);
@@ -86,14 +99,16 @@ function updateProduct({ params, body }) {
   const name = (body.name || '').trim();
   if (!name) return fail(400, '卡项名称不能为空');
   if (name.length > 100) return fail(400, '卡项名称不能超过 100 个字');
+  if (db.prepare('SELECT id FROM card_products WHERE name = ? AND id != ?').get(name, p.id)) return fail(400, '卡项名称已存在');
   if (!CARD_TYPES.includes(body.type)) return fail(400, '无效的卡种类型');
   if (body.type !== p.type && db.prepare('SELECT id FROM member_cards WHERE card_product_id = ? LIMIT 1').get(p.id)) return fail(400, '该卡项已经发卡，不能修改卡种类型');
   const validation = validateProduct(body); if (validation) return validation;
+  const enabled = body.enabled === undefined ? p.enabled : (body.enabled ? 1 : 0);
+  const f = productFields(body);
   db.prepare(`UPDATE card_products SET name = ?, type = ?, price = ?, duration_days = ?, total_uses = ?, stored_value = ?, entry_fee = ?, freeze_allowed = ?, transfer_allowed = ?, extension_allowed = ?, enabled = ?, note = ?, updated_at = ? WHERE id = ?`)
-    .run(name, body.type, money(body.price), Number(body.duration_days) || 0, Number(body.total_uses) || 0,
-      money(body.stored_value), money(body.entry_fee),
+    .run(name, body.type, money(body.price), f.duration_days, f.total_uses, f.stored_value, f.entry_fee,
       body.freeze_allowed ? 1 : 0, body.transfer_allowed ? 1 : 0, body.extension_allowed ? 1 : 0,
-      body.enabled === undefined ? 1 : (body.enabled ? 1 : 0), (body.note || '').trim() || null, now(), p.id);
+      enabled, (body.note || '').trim() || null, now(), p.id);
   return ok({ product: db.prepare('SELECT * FROM card_products WHERE id = ?').get(p.id) });
 }
 
@@ -219,6 +234,7 @@ function transfer({ params, body, req }) {
   const c = db.prepare('SELECT * FROM member_cards WHERE id = ?').get(params.id);
   if (!c) return fail(404, '会员卡不存在');
   if (['void', 'refunded'].includes(c.status)) return fail(400, '该卡已作废或退款，不可转卡');
+  if (deriveStatus(c) === 'expired') return fail(400, '已过期会员卡没有剩余权益，不能转卡');
   const toId = Number(body.to_member_id);
   const to = db.prepare('SELECT * FROM members WHERE id = ?').get(toId);
   if (!to) return fail(404, '接收会员不存在');
@@ -240,8 +256,12 @@ function voidCard({ params, body, req }) {
   const c = db.prepare('SELECT * FROM member_cards WHERE id = ?').get(params.id);
   if (!c) return fail(404, '会员卡不存在');
   if (['void', 'refunded'].includes(c.status)) return fail(400, '该卡已作废或退款，无需重复作废');
+  // 储值余额是会员预存资金，作废后卡不可用但余额不会消失，必须先退款或转卡。
+  if (c.card_type === 'stored' && money(c.balance) > 0) {
+    return fail(400, `该储值卡仍有余额 ${money(c.balance)} 元，请先办理退款或转卡后再作废`);
+  }
   db.prepare("UPDATE member_cards SET status = 'void', updated_at = ? WHERE id = ?").run(now(), c.id);
-  audit.record({ req, action: '会员卡作废', target_type: 'member_card', target_id: c.id, reason: body.reason });
+  audit.record({ req, action: '会员卡作废', target_type: 'member_card', target_id: c.id, reason: body.reason, before: { balance: money(c.balance), remaining_uses: c.remaining_uses } });
   sms.accountChange(memberOf(c), '会员卡作废', `${c.card_no}已作废`);
   return ok({ card: decorateCard(db.prepare('SELECT * FROM member_cards WHERE id = ?').get(c.id)) });
 }

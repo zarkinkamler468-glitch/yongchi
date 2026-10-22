@@ -40,32 +40,38 @@ function reportRange(query) {
 // GET /api/dashboard  首页总览
 function dashboard({ req }) {
   refreshDueCards();
+  const canFinance = ['boss', 'finance', 'admin'].includes(req && req.user && req.user.role);
   const [d0, d1] = dayRange(today());
-  const income = incomeBetween(d0, d1);
-  const refund = refundBetween(d0, d1);
-  const open = externalIncomeByType('open', d0, d1);
-  const renew = externalIncomeByType('renew', d0, d1);
-  const recharge = externalIncomeByType('recharge', d0, d1);
+  const income = canFinance ? incomeBetween(d0, d1) : null;
+  const refund = canFinance ? refundBetween(d0, d1) : null;
+  const open = canFinance ? externalIncomeByType('open', d0, d1) : null;
+  const renew = canFinance ? externalIncomeByType('renew', d0, d1) : null;
+  const recharge = canFinance ? externalIncomeByType('recharge', d0, d1) : null;
   const entries = db.prepare("SELECT COALESCE(SUM(people),0) AS v FROM entries WHERE result='success' AND entry_at >= ? AND entry_at < ?").get(d0, d1).v;
   const expiring = db.prepare("SELECT COUNT(*) AS v FROM member_cards WHERE card_type IN ('count','month','year') AND status = 'normal' AND end_at IS NOT NULL AND end_at >= ? AND end_at <= ?").get(today(), addDays(today(), 7)).v;
   const lowBalance = db.prepare("SELECT COUNT(*) AS v FROM member_cards mc WHERE mc.card_type='stored' AND mc.status='normal' AND mc.balance < mc.entry_fee").get().v;
   const blacklist = db.prepare("SELECT COUNT(*) AS v FROM members WHERE status='blacklist'").get().v;
-  const shift = db.prepare("SELECT * FROM shifts WHERE staff_id = ? AND status = 'active'").get(req.user.id);
+  const shift = req && req.user ? db.prepare("SELECT * FROM shifts WHERE staff_id = ? AND status = 'active'").get(req.user.id) : null;
 
   // 近 14 天收入趋势
   const recent = [];
   for (let i = 13; i >= 0; i--) {
     const day = addDays(today(), -i);
     const [a, b] = dayRange(day);
-    recent.push({ date: day, income: money(incomeBetween(a, b)), entries: db.prepare("SELECT COALESCE(SUM(people),0) AS v FROM entries WHERE result='success' AND entry_at >= ? AND entry_at < ?").get(a, b).v });
+    recent.push({
+      date: day,
+      income: canFinance ? money(incomeBetween(a, b)) : null,
+      entries: db.prepare("SELECT COALESCE(SUM(people),0) AS v FROM entries WHERE result='success' AND entry_at >= ? AND entry_at < ?").get(a, b).v
+    });
   }
 
   return ok({
-    today_income: money(income),
-    today_open: money(open),
-    today_renew: money(renew),
-    today_recharge: money(recharge),
-    today_refund: money(refund),
+    can_view_finance: canFinance,
+    today_income: canFinance ? money(income) : null,
+    today_open: canFinance ? money(open) : null,
+    today_renew: canFinance ? money(renew) : null,
+    today_recharge: canFinance ? money(recharge) : null,
+    today_refund: canFinance ? money(refund) : null,
     today_entries: entries,
     expiring_cards: expiring,
     low_balance_members: lowBalance,
@@ -160,14 +166,24 @@ function cardsExpiring({ query }) {
 // CSV 导出：订单流水
 function csvEscape(v) {
   let s = String(v === null || v === undefined ? '' : v);
-  // 防止 Excel / WPS 将会员输入的内容当作公式执行。
-  if (/^\s*[=+\-@]/.test(s) || /^[\t\r\n]/.test(s)) s = "'" + s;
+  // 纯数值（含负数和两位小数）保持数值语义，便于 Excel 求和；其他可能被当作公式的内容加文本前缀。
+  const numeric = /^[+-]?\d+(?:\.\d+)?$/.test(s);
+  if (!numeric && (/^\s*[=+\-@]/.test(s) || /^[\t\r\n]/.test(s))) s = "'" + s;
   return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
+
+// CSV 导出单次上限：超出时提示缩小范围，避免一次性把全部历史拼进内存和响应体。
+const EXPORT_MAX_ROWS = 50000;
 
 function exportOrders({ query }) {
   const range = reportRange(query); if (range.error) return range.error;
   const { from, to, endDate } = range;
+  const total = db.prepare(`
+    SELECT COUNT(*) AS n FROM orders o
+    WHERE (CASE WHEN o.order_type='refund' AND o.status='paid' THEN COALESCE(o.approved_at,o.created_at) ELSE o.created_at END) >= ?
+      AND (CASE WHEN o.order_type='refund' AND o.status='paid' THEN COALESCE(o.approved_at,o.created_at) ELSE o.created_at END) < ?
+  `).get(from, to).n;
+  if (total > EXPORT_MAX_ROWS) return fail(400, `本次导出 ${total} 行，超过单次上限 ${EXPORT_MAX_ROWS} 行，请缩小日期范围后再导出`);
   const rows = db.prepare(`
     SELECT o.order_no, o.order_type, o.status, o.total_amount, o.discount_amount, o.payable_amount,
       CASE WHEN o.order_type='refund' THEN CASE WHEN o.status='paid' THEN -o.total_amount ELSE 0 END ELSE o.paid_amount END AS paid_amount,
@@ -190,6 +206,8 @@ function exportOrders({ query }) {
 }
 
 function exportMembers() {
+  const total = db.prepare('SELECT COUNT(*) AS n FROM members').get().n;
+  if (total > EXPORT_MAX_ROWS) return fail(400, `本次导出 ${total} 行，超过单次上限 ${EXPORT_MAX_ROWS} 行，请分批导出`);
   const rows = db.prepare('SELECT * FROM members ORDER BY id').all();
   const head = ['会员编号', '姓名', '手机号', '性别', '生日', '状态', '备注', '创建时间'];
   const lines = [head.join(',')];

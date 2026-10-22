@@ -26,6 +26,33 @@ function httpError(status, message) {
   return e;
 }
 
+// 反向代理后的真实客户端地址。TRUST_PROXY=1 总是信任代理头，=0 总是不信任；
+// 未设置时只在直连方是回环/内网地址（典型的 Nginx/1Panel 反代）时信任，
+// 避免默认部署把所有人算成同一个代理 IP，也避免公网直连时被伪造请求头绕过限流。
+function isPrivateAddress(address) {
+  const addr = String(address || '').replace(/^::ffff:/, '');
+  if (!addr) return false;
+  if (addr === '::1' || addr === '127.0.0.1') return true;
+  if (/^10\./.test(addr) || /^192\.168\./.test(addr) || /^172\.(1[6-9]|2\d|3[01])\./.test(addr)) return true;
+  if (/^f[cd][0-9a-f]{2}:/i.test(addr)) return true;
+  return false;
+}
+function clientIp(req) {
+  const remote = (req && req.socket && req.socket.remoteAddress) || '';
+  const mode = String(process.env.TRUST_PROXY || '').trim();
+  if (mode === '0') return remote;
+  if (mode === '1' || isPrivateAddress(remote)) {
+    const forwarded = req && req.headers && req.headers['x-forwarded-for'];
+    if (forwarded) {
+      const first = String(forwarded).split(',')[0].trim();
+      if (first) return first;
+    }
+    const real = req && req.headers && req.headers['x-real-ip'];
+    if (real) return String(real).trim();
+  }
+  return remote;
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -135,6 +162,7 @@ function makeRouter(opts = {}) {
           audited = true;
         } else result = await r.handler(args);
       } catch (e) {
+        if (!e || !e.status || e.status >= 500) console.error(`[请求] ${method} ${r.path} 处理失败:`, (e && e.stack) || e);
         result = (e && e.status) ? fail(e.status, e.message) : fail(500, '服务器错误');
       }
       if (result && typeof result === 'object' && 'status' in result) {
@@ -147,7 +175,7 @@ function makeRouter(opts = {}) {
           action: r.action || `${method} ${r.path}`,
           target_type: r.module || 'system',
           target_id: params && params.id ? Number(params.id) : undefined
-        }); } catch (_) { console.error('[审计] 操作日志写入失败，请检查数据库状态'); }
+        }); } catch (err) { console.error('[审计] 操作日志写入失败:', (err && err.stack) || err); }
       }
       return true;
     }
@@ -156,4 +184,4 @@ function makeRouter(opts = {}) {
   return { add, handle, routes };
 }
 
-module.exports = { sendJSON, ok, fail, httpError, readBody, makeRouter };
+module.exports = { sendJSON, ok, fail, httpError, readBody, makeRouter, clientIp };

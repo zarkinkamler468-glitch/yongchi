@@ -1,4 +1,4 @@
-<view class="page">
+<view class="page" wx:if="{{!noPermission}}">
   <view class="search-bar">
     <input class="input search-input" placeholder="搜索姓名 / 会员号 / 手机号" value="{{keyword}}" bindinput="onSearchInput" />
     <picker class="type-picker" range="{{statuses}}" value="{{statusIndex}}" bindchange="onStatus">
@@ -20,4 +20,7 @@
     </view>
     <view class="empty" wx:if="{{!loading && !list.length}}">暂无匹配会员</view>
   </view>
+</view>
+<view class="page" wx:else>
+  <view class="card"><view class="card-title">无权限</view><view class="text-muted">当前为财务账号，会员管理仅老板和前台使用。</view></view>
 </view>

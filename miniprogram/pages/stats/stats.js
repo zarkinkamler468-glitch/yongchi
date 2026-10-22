@@ -8,10 +8,13 @@ Page({
   onShow() { this.load(); },
   load() {
     request('/api/dashboard').then((d) => {
+      const canFinance = d.can_view_finance !== false;
       const max = Math.max(1, ...d.recent.map((r) => r.entries));
       this.setData({
         stats: {
-          today_income: fmtMoney(d.today_income), today_gross: fmtMoney(d.today_open + d.today_renew + d.today_recharge),
+          canFinance,
+          today_income: canFinance ? fmtMoney(d.today_income) : '',
+          today_gross: canFinance ? fmtMoney(d.today_open + d.today_renew + d.today_recharge) : '',
           today_entries: fmtNum(d.today_entries), expiring: d.expiring_cards
         },
         checkins: d.recent.map((r) => ({ label: r.date.slice(5), h: Math.round((r.entries / max) * 100) }))

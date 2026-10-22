@@ -22,5 +22,6 @@
       <button class="btn btn-primary" bindtap="confirm" style="margin-top:24rpx">确认核销并扣减</button>
   </view>
   <view class="card" wx:if="{{result}}"><view class="res-ok" wx:if="{{result.ok}}">✓ {{result.error}}</view><view class="res-fail" wx:else>{{result.error}}</view>
+    <button class="btn btn-primary" wx:if="{{result.retry}}" bindtap="retryPendingCheckin" style="margin-top:20rpx">重试上一笔核销</button>
   </view>
 </view>

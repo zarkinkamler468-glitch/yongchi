@@ -38,13 +38,25 @@ function setToken(t) {
   t ? localStorage.setItem('pms_token', t) : localStorage.removeItem('pms_token');
 }
 
+const API_TIMEOUT_MS = 60000;
+const AUTO_PAGE_LIMIT = 10;
+
 async function api(path, opts = {}) {
   const method = opts.method || (opts.body !== undefined ? 'POST' : 'GET');
   const init = { method, headers: {} };
   const token = getToken();
   if (token) init.headers['Authorization'] = 'Bearer ' + token;
   if (opts.body !== undefined) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
-  const res = await fetch(path, init);
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = setTimeout(() => { if (controller) controller.abort(); }, opts.timeout || API_TIMEOUT_MS);
+  let res;
+  try {
+    res = await fetch(path, controller ? { ...init, signal: controller.signal } : init);
+  } catch (e) {
+    throw new Error(e && e.name === 'AbortError' ? '请求超时，请检查网络后重试' : '网络异常，请检查网络后重试');
+  } finally {
+    clearTimeout(timer);
+  }
   let data = {};
   try { data = await res.json(); } catch (e) { /* ignore */ }
   if (res.status === 401 && path !== '/api/auth/login') {
@@ -54,9 +66,14 @@ async function api(path, opts = {}) {
   if (!res.ok) throw Object.assign(new Error(data.error || `请求失败 (${res.status})`), { status: res.status });
   if (method === 'GET' && !/[?&]page=/.test(path) && Array.isArray(data.list) && data.has_more) {
     let page = data.page;
-    while (data.has_more) {
+    let pages = 0;
+    while (data.has_more && pages < AUTO_PAGE_LIMIT) {
       const next = await api(path + (path.includes('?') ? '&' : '?') + 'page=' + (++page), opts);
-      data.list.push(...next.list); data.has_more = next.has_more;
+      data.list.push(...next.list); data.has_more = next.has_more; pages += 1;
+    }
+    if (data.has_more) {
+      data.truncated = true;
+      toast(`数据较多，仅加载前 ${data.list.length} 条，请使用筛选缩小范围`, 'error');
     }
   }
   return data;
@@ -134,7 +151,7 @@ function compactNum(v) {
   if (v >= 1000) return (v / 1000).toFixed(v % 1000 ? 1 : 0) + 'k';
   return String(Math.round(v * 100) / 100);
 }
-function barChart({ labels, series, height = 220 }) {
+function barChart({ labels, series, height = 220, valueFormat = fmtMoney }) {
   const W = 760, L = 52, R = 12, T = 14, B = 30;
   const iw = W - L - R, ih = height - T - B;
   const max = niceMax(Math.max(1, ...series.flatMap((s) => s.values)));
@@ -152,7 +169,7 @@ function barChart({ labels, series, height = 220 }) {
     const totalW = series.length * barW + (series.length - 1) * gap;
     const x = L + idx * groupW + groupW / 2 - totalW / 2 + si * (barW + gap);
     const h = (v / max) * ih, y = T + ih - h;
-    parts += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="${s.color}"><title>${esc(s.name)}：${fmtMoney(v)}</title></rect>`;
+    parts += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="${s.color}"><title>${esc(s.name)}：${valueFormat(v)}</title></rect>`;
   }));
   const step = Math.ceil(n / Math.floor(iw / 52));
   labels.forEach((lb, idx) => {
@@ -168,6 +185,12 @@ function currentView() { const h = location.hash.replace(/^#\//, ''); return TIT
 
 function switchView() {
   const v = currentView();
+  // 隐藏菜单不是权限边界：按导航上的 data-roles 拦截 hash 直达，后端仍有最终校验。
+  if (state.user) {
+    const nav = $(`.nav-item[data-view="${v}"]`);
+    const roles = nav && nav.dataset.roles ? nav.dataset.roles.split(',') : null;
+    if (roles && state.user.role !== 'admin' && !roles.includes(state.user.role)) { location.hash = '#/dashboard'; return; }
+  }
   $$('.view').forEach((el) => el.classList.remove('active'));
   const view = $('#view-' + v);
   if (view) view.classList.add('active');
@@ -177,6 +200,10 @@ function switchView() {
   if (state.user) refreshRefundBadge();
 }
 window.addEventListener('hashchange', switchView);
+window.addEventListener('unhandledrejection', (e) => {
+  const msg = (e && e.reason && e.reason.message) || '操作失败，请重试';
+  try { toast(msg, 'error'); } catch (_) { /* 页面尚未初始化时忽略 */ }
+});
 window.addEventListener('focus', () => { if (state.user) refreshRefundBadge(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden && state.user) refreshRefundBadge(); });
 
@@ -187,12 +214,32 @@ function render(v) {
     orders: renderOrders, refunds: renderRefunds, shifts: renderShifts, closings: renderClosings,
     reports: renderReports, 'staff-performance': renderStaffPerformance, staff: renderStaff, logs: renderLogs, settings: renderSettings, 'sms-settings': renderSmsSettings
   };
-  if (fns[v]) fns[v]();
+  if (!fns[v]) return;
+  try {
+    const result = fns[v]();
+    if (result && typeof result.catch === 'function') result.catch((e) => viewFailed(v, e));
+  } catch (e) {
+    viewFailed(v, e);
+  }
+}
+// 视图加载失败时给出可重试的占位，而不是永远停在“加载中…”。
+function viewFailed(v, e) {
+  const el = $('#view-' + v);
+  if (!el) return;
+  el.innerHTML = `<div class="card"><div class="card-title">加载失败</div><div class="hint">${esc((e && e.message) || '请求失败')}</div><button class="btn btn-primary mt-16" data-action="retryView" data-view="${esc(v)}">重试</button></div>`;
+  toast((e && e.message) || '加载失败', 'error');
 }
 
 /* ============================= 登录 / 导航 ============================= */
 function showApp() { $('#loginScreen').hidden = true; $('#app').hidden = false; applyBrand(); applyNav(); switchView(); checkShiftReminder(); refreshRefundBadge(); }
-function showLogin() { $('#app').hidden = true; $('#loginScreen').hidden = false; $('#loginStoreName').textContent = '请登录后开始使用'; }
+function showLogin() {
+  closeModal();
+  $('#app').hidden = true;
+  $('#loginScreen').hidden = false;
+  $('#loginStoreName').textContent = '请登录后开始使用';
+  // 验证码一次性消费：退出或会话过期后必须换一张，否则第一次登录必然失败。
+  loadCaptcha();
+}
 async function refreshRefundBadge() {
   const badge = $('#refundPendingBadge');
   if (!badge) return;
@@ -297,7 +344,7 @@ async function doLogout() {
   setToken(''); state.user = null; showLogin();
 }
 async function loadSettings() {
-  try { const d = await api('/api/settings'); state.settings = d.settings; } catch (e) { /* ignore */ }
+  try { const d = await api('/api/settings'); state.settings = d.settings; state.settingsLoaded = true; } catch (e) { state.settingsLoaded = false; }
 }
 
 /* 登录后开班提醒 */
@@ -328,26 +375,35 @@ async function renderDashboard() {
     <div id="dashShiftBanner"></div>
     <div class="grid cols-4 mb-16" id="dashStats"><div class="card stat"><span class="stat-label">加载中…</span></div></div>
     <div class="grid cols-3 mb-16" id="dashRemind"></div>
-    <div class="card"><div class="card-title">近 14 天收入趋势</div><div class="chart" id="dashChart"></div></div>`;
+    <div class="card"><div class="card-title" id="dashChartTitle">近 14 天收入趋势</div><div class="chart" id="dashChart"></div></div>`;
   try {
     const d = await api('/api/dashboard');
     const labels = d.recent.map((r) => r.date.slice(5));
     const canShift = ['boss', 'frontdesk', 'admin'].includes(state.user?.role);
+    const canFinance = d.can_view_finance !== false;
     $('#dashShiftBanner').innerHTML = (!d.current_shift && canShift)
       ? `<div class="card mb-16" style="background:linear-gradient(135deg,rgba(245,158,11,.9),rgba(249,115,22,.85));color:#fff;border:none">
           <div class="flex-between"><div><b>今日班次尚未开始</b><div style="font-size:13px;opacity:.9">开始班次后收银与核销才会归入本班并自动汇总</div></div>
           <button class="btn btn-primary" data-action="startShiftFromReminder" style="background:#fff;color:#d97706">开始班次</button></div></div>`
       : '';
-    $('#dashStats').innerHTML = `
-      <div class="card stat accent"><span class="stat-label">今日收入</span><span class="stat-value num">${fmtMoney(d.today_income)}</span></div>
-      <div class="card stat"><span class="stat-label">今日开卡 / 续费 / 充值</span><span class="stat-value num" style="font-size:20px">${fmtMoney(d.today_open)} / ${fmtMoney(d.today_renew)} / ${fmtMoney(d.today_recharge)}</span></div>
-      <div class="card stat"><span class="stat-label">今日退款 / 入场人次</span><span class="stat-value num" style="font-size:20px">${fmtMoney(d.today_refund)} / ${fmtNum(d.today_entries)}</span></div>
-      <div class="card stat"><span class="stat-label">班次状态</span><span class="stat-value num" style="font-size:20px">${canShift ? (d.current_shift ? '进行中' : '未开班') : '无需开班'}</span></div>`;
-    $('#dashRemind').innerHTML = `
+    const shiftCard = `<div class="card stat"><span class="stat-label">班次状态</span><span class="stat-value num" style="font-size:20px">${canShift ? (d.current_shift ? '进行中' : '未开班') : '无需开班'}</span></div>`;
+    $('#dashStats').innerHTML = canFinance
+      ? `<div class="card stat accent"><span class="stat-label">今日收入</span><span class="stat-value num">${fmtMoney(d.today_income)}</span></div>
+        <div class="card stat"><span class="stat-label">今日开卡 / 续费 / 充值</span><span class="stat-value num" style="font-size:20px">${fmtMoney(d.today_open)} / ${fmtMoney(d.today_renew)} / ${fmtMoney(d.today_recharge)}</span></div>
+        <div class="card stat"><span class="stat-label">今日退款 / 入场人次</span><span class="stat-value num" style="font-size:20px">${fmtMoney(d.today_refund)} / ${fmtNum(d.today_entries)}</span></div>
+        ${shiftCard}`
+      : `<div class="card stat accent"><span class="stat-label">今日入场人次</span><span class="stat-value num">${fmtNum(d.today_entries)}</span></div>
+        <div class="card stat"><span class="stat-label">即将到期 / 余额不足 / 黑名单</span><span class="stat-value num" style="font-size:20px">${d.expiring_cards} / ${d.low_balance_members} / ${d.blacklist_count}</span></div>
+        ${shiftCard}`;
+    $('#dashRemind').innerHTML = canFinance ? `
       <div class="card"><div class="stat-label">即将到期会员卡</div><div class="stat-value num">${d.expiring_cards}</div><div class="stat-extra">近 7 天</div></div>
       <div class="card"><div class="stat-label">储值余额不足会员</div><div class="stat-value num">${d.low_balance_members}</div></div>
-      <div class="card"><div class="stat-label">黑名单提醒</div><div class="stat-value num">${d.blacklist_count}</div></div>`;
-    $('#dashChart').innerHTML = barChart({ labels, series: [{ name: '收入', color: '#2563eb', values: d.recent.map((r) => r.income) }] });
+      <div class="card"><div class="stat-label">黑名单提醒</div><div class="stat-value num">${d.blacklist_count}</div></div>` : '';
+    const chartTitle = $('#dashChartTitle');
+    if (chartTitle) chartTitle.textContent = canFinance ? '近 14 天收入趋势' : '近 14 天入场趋势';
+    $('#dashChart').innerHTML = canFinance
+      ? barChart({ labels, series: [{ name: '收入', color: '#2563eb', values: d.recent.map((r) => r.income) }] })
+      : barChart({ labels, series: [{ name: '入场人次', color: '#0ea5e9', values: d.recent.map((r) => r.entries) }], valueFormat: fmtNum });
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -455,6 +511,8 @@ async function openMemberForm(id) {
 }
 
 async function saveMember(el) {
+  if (el.disabled) return;
+  el.disabled = true;
   const id = el.dataset.id;
   const body = { name: $('#mfName').value, phone: $('#mfPhone').value, gender: $('#mfGender').value, birthday: $('#mfBirthday').value, note: $('#mfNote').value };
   if ($('#mfStatus')) { body.status = $('#mfStatus').value; body.reason = $('#mfReason').value; }
@@ -462,7 +520,7 @@ async function saveMember(el) {
     if (id) await api('/api/members/' + id, { method: 'PUT', body });
     else await api('/api/members', { body });
     toast('会员已保存'); closeModal(); refreshMembers();
-  } catch (e) { toast(e.message, 'error'); }
+  } catch (e) { el.disabled = false; toast(e.message, 'error'); }
 }
 
 /* ---------- 会员详情 ---------- */
@@ -551,6 +609,7 @@ async function openProductForm(id) {
         <label><input type="checkbox" id="pfFreeze" ${p?.freeze_allowed ? 'checked' : ''}> 允许冻结</label>
         <label><input type="checkbox" id="pfTransfer" ${p?.transfer_allowed ? 'checked' : ''}> 允许转卡</label>
         <label><input type="checkbox" id="pfExtension" ${p?.extension_allowed ? 'checked' : ''}> 允许延期</label>
+        <label><input type="checkbox" id="pfEnabled" ${p?.enabled !== 0 ? 'checked' : ''}> 启用</label>
       </div>
       <div class="field mt-16"><label>备注</label><input class="input" id="pfNote" value="${esc(p?.note || '')}"></div>
     </div>
@@ -558,18 +617,24 @@ async function openProductForm(id) {
 }
 
 async function saveProduct(el) {
+  if (el.disabled) return;
+  el.disabled = true;
   const body = {
     name: $('#pfName').value, type: $('#pfType').value, price: $('#pfPrice').value, duration_days: $('#pfDuration').value,
     total_uses: $('#pfUses').value, stored_value: $('#pfStored').value, entry_fee: $('#pfEntryFee').value,
-    freeze_allowed: $('#pfFreeze').checked, transfer_allowed: $('#pfTransfer').checked, extension_allowed: $('#pfExtension').checked, note: $('#pfNote').value
+    freeze_allowed: $('#pfFreeze').checked, transfer_allowed: $('#pfTransfer').checked, extension_allowed: $('#pfExtension').checked,
+    enabled: $('#pfEnabled').checked, note: $('#pfNote').value
   };
   try {
     if (el.dataset.id) await api('/api/card-products/' + el.dataset.id, { method: 'PUT', body });
     else await api('/api/card-products', { body });
     toast('卡项已保存'); closeModal(); renderCardProducts();
-  } catch (e) { toast(e.message, 'error'); }
+  } catch (e) { el.disabled = false; toast(e.message, 'error'); }
 }
-async function toggleProduct(el) { try { await api('/api/card-products/' + el.dataset.id, { method: 'DELETE' }); toast('已停用'); renderCardProducts(); } catch (e) { toast(e.message, 'error'); } }
+async function toggleProduct(el) {
+  if (el.disabled) return; el.disabled = true;
+  try { await api('/api/card-products/' + el.dataset.id, { method: 'DELETE' }); toast('已停用'); renderCardProducts(); } catch (e) { el.disabled = false; toast(e.message, 'error'); }
+}
 
 /* ============================= 会员卡账户 ============================= */
 async function renderMemberCards() {
@@ -598,14 +663,29 @@ function cardPrompt(title, fieldHtml, action, id) {
     <div class="modal-foot"><button class="btn" data-action="closeModal">取消</button><button class="btn btn-primary" data-action="${action}" data-id="${id}">确定</button></div>`);
 }
 function cardFreeze(el) { cardPrompt('冻结会员卡', `<div class="field"><label>冻结截止时间</label><input class="input" type="date" id="cardFrozenUntil"></div>`, 'confirmCardFreeze', el.dataset.id); }
-async function confirmCardFreeze(el) { try { await api(`/api/member-cards/${el.dataset.id}/freeze`, { body: { frozen_until: $('#cardFrozenUntil').value, reason: $('#cardReason').value } }); toast('已冻结'); closeModal(); renderMemberCards(); } catch (e) { toast(e.message, 'error'); } }
-async function cardUnfreeze(el) { try { await api(`/api/member-cards/${el.dataset.id}/unfreeze`, { body: {} }); toast('已解冻'); renderMemberCards(); } catch (e) { toast(e.message, 'error'); } }
+async function confirmCardFreeze(el) {
+  if (el.disabled) return; el.disabled = true;
+  try { await api(`/api/member-cards/${el.dataset.id}/freeze`, { body: { frozen_until: $('#cardFrozenUntil').value, reason: $('#cardReason').value } }); toast('已冻结'); closeModal(); renderMemberCards(); } catch (e) { el.disabled = false; toast(e.message, 'error'); }
+}
+async function cardUnfreeze(el) {
+  if (el.disabled) return; el.disabled = true;
+  try { await api(`/api/member-cards/${el.dataset.id}/unfreeze`, { body: {} }); toast('已解冻'); renderMemberCards(); } catch (e) { el.disabled = false; toast(e.message, 'error'); }
+}
 function cardExtend(el) { cardPrompt('会员卡延期', `<div class="field"><label>延期天数</label><input class="input" type="number" id="cardDays" value="30"></div>`, 'confirmCardExtend', el.dataset.id); }
-async function confirmCardExtend(el) { try { await api(`/api/member-cards/${el.dataset.id}/extend`, { body: { days: Number($('#cardDays').value), reason: $('#cardReason').value } }); toast('已延期'); closeModal(); renderMemberCards(); } catch (e) { toast(e.message, 'error'); } }
+async function confirmCardExtend(el) {
+  if (el.disabled) return; el.disabled = true;
+  try { await api(`/api/member-cards/${el.dataset.id}/extend`, { body: { days: Number($('#cardDays').value), reason: $('#cardReason').value } }); toast('已延期'); closeModal(); renderMemberCards(); } catch (e) { el.disabled = false; toast(e.message, 'error'); }
+}
 function cardTransfer(el) { cardPrompt('转卡', `<div class="field"><label>接收会员ID</label><input class="input" type="number" id="cardToMember" placeholder="输入会员ID"></div>`, 'confirmCardTransfer', el.dataset.id); }
-async function confirmCardTransfer(el) { try { await api(`/api/member-cards/${el.dataset.id}/transfer`, { body: { to_member_id: Number($('#cardToMember').value), reason: $('#cardReason').value } }); toast('已转卡'); closeModal(); renderMemberCards(); } catch (e) { toast(e.message, 'error'); } }
-function cardVoid(el) { cardPrompt('作废会员卡', `<p class="text-muted">作废后该卡不可入场，且不可恢复。</p>`, 'confirmCardVoid', el.dataset.id); }
-async function confirmCardVoid(el) { try { await api(`/api/member-cards/${el.dataset.id}/void`, { body: { reason: $('#cardReason').value } }); toast('已作废'); closeModal(); renderMemberCards(); } catch (e) { toast(e.message, 'error'); } }
+async function confirmCardTransfer(el) {
+  if (el.disabled) return; el.disabled = true;
+  try { await api(`/api/member-cards/${el.dataset.id}/transfer`, { body: { to_member_id: Number($('#cardToMember').value), reason: $('#cardReason').value } }); toast('已转卡'); closeModal(); renderMemberCards(); } catch (e) { el.disabled = false; toast(e.message, 'error'); }
+}
+function cardVoid(el) { cardPrompt('作废会员卡', `<p class="text-muted">作废后该卡不可入场，且不可恢复；储值卡有余额时需先退款或转卡。</p>`, 'confirmCardVoid', el.dataset.id); }
+async function confirmCardVoid(el) {
+  if (el.disabled) return; el.disabled = true;
+  try { await api(`/api/member-cards/${el.dataset.id}/void`, { body: { reason: $('#cardReason').value } }); toast('已作废'); closeModal(); renderMemberCards(); } catch (e) { el.disabled = false; toast(e.message, 'error'); }
+}
 
 /* ============================= 入场核销台 ============================= */
 function renderCheckin() {
@@ -625,13 +705,28 @@ function renderCheckin() {
   $('#ckKeyword').addEventListener('keydown', (e) => { if (e.key === 'Enter') doCheckin(); });
   state.checkinPreview = null;
   ['#ckKeyword', '#ckPeople', '#ckGate'].forEach(s => $(s).addEventListener('input', () => {
-    state.checkinPreview = null; state.checkinPreviewVersion = (state.checkinPreviewVersion || 0) + 1;
-    $('#ckResult').textContent = '查询条件已改变，请重新查询并确认';
+    state.checkinPreview = null;
+    state.checkinPreviewVersion = (state.checkinPreviewVersion || 0) + 1;
+    $('#ckResult').textContent = state.checkinPending
+      ? '上一笔核销结果未确认，请先重试上一笔核销'
+      : '查询条件已改变，请重新查询并确认';
   }));
 }
 async function doCheckin() {
   if (state.checkinSubmitting) return;
   if (state.checkinPending) {
+    const p = state.checkinPending.body;
+    const keyword = ($('#ckKeyword')?.value || '').trim();
+    const people = Number($('#ckPeople')?.value) || 1;
+    const gate = $('#ckGate')?.value || '';
+    // 上一笔结果未知时不能直接给另一位会员扣费，否则可能重复扣减；先让营业员显式重试。
+    if (p.keyword !== keyword || Number(p.people) !== people || String(p.gate_no || '') !== gate) {
+      $('#ckResult').innerHTML = `<div class="badge badge-red">上一笔核销结果未确认</div>
+        <div class="hint mt-8">请先重试上一笔核销，确认扣减结果后再为其他会员办理，避免重复扣减。</div>
+        <button class="btn btn-primary mt-16" data-action="retryCheckin">重试上一笔核销</button>`;
+      toast('上一笔核销结果未确认，请先重试', 'error');
+      return;
+    }
     const { request_id, confirmed, ...snapshot } = state.checkinPending.body;
     state.checkinPreview = snapshot;
     toast('正在重试确认上一笔核销结果');
@@ -670,6 +765,12 @@ async function confirmCheckin(el) {
   } catch (e) { clearPending('checkin', e); toast(e.message, 'error'); el.disabled = false; }
   finally { state.checkinSubmitting = false; }
 }
+async function retryCheckin() {
+  if (!state.checkinPending) return;
+  const { request_id, confirmed, ...snapshot } = state.checkinPending.body;
+  state.checkinPreview = snapshot;
+  return confirmCheckin({ disabled: false });
+}
 
 /* ============================= 收银台 ============================= */
 function renderCashier() {
@@ -692,7 +793,6 @@ async function renderCashierForm(tab) {
   state.cashierMember = null;
   state.cashierNewMember = tab === 'open';
   if (!state.payMethod) state.payMethod = 'cash';
-  state.payManual = false;
   state.storedPaymentCards = [];
   $$('.sale-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
   const wrap = $('#cashierForm');
@@ -727,7 +827,7 @@ async function renderCashierForm(tab) {
           </div>
         </div>
         <div class="flex-between"><span class="text-muted">应收金额（自动）</span><b class="num" id="csPayable" style="font-size:22px">¥0</b></div>
-        <div class="field mt-16"><label>实收金额（默认自动，可手动修改）</label><input class="input" type="number" step="0.01" id="csPayAmount" data-input="cashierAmountManual" style="font-size:22px;font-weight:700"></div>
+        <div class="field mt-16"><label>实收金额（自动，等于应收；抹零请填优惠金额）</label><input class="input" type="number" step="0.01" id="csPayAmount" readonly style="font-size:22px;font-weight:700;background:#f8fafc"></div>
         <div class="field"><label><input type="checkbox" id="csMixed" data-change="toggleMixedPay"> 混合支付</label></div>
         <div id="csMixedRows" hidden>${['cash', 'wechat', 'alipay', 'stored'].map(method => `<div class="field"><label>${PAY_LABEL[method]}金额（不用填 0）</label><input class="input cs-split" data-method="${method}" type="number" min="0" step="0.01" value="0"></div>`).join('')}</div>
         <div class="field"><label>储值支付来源</label><select class="select" id="csStoredSource"><option value="">自动选择可用储值卡</option></select></div>
@@ -748,9 +848,6 @@ function cashierPayable() {
   } else total = Number($('#csAmount')?.value) || 0;
   const discount = Number($('#csDiscount')?.value) || 0;
   return money2(Math.max(0, total - discount));
-}
-function cashierToPay() {
-  return state.payManual ? money2(Number($('#csPayAmount')?.value) || 0) : cashierPayable();
 }
 function pickPayMethod(el) {
   state.payMethod = el.dataset.pay;
@@ -819,6 +916,9 @@ function cashierNewMember() {
 function cashierExistingMember() {
   state.cashierMember = null;
   state.cashierNewMember = false;
+  // 隐藏的“新建会员”字段必须清空，否则会被当成未选会员时的姓名提交。
+  if ($('#csName')) $('#csName').value = '';
+  if ($('#csPhone')) $('#csPhone').value = '';
   if ($('#csStoredSource')) $('#csStoredSource').innerHTML = '<option value="">自动选择可用储值卡</option>';
   cashierMemberPick();
   $('#csMemberSearch')?.focus();
@@ -832,7 +932,7 @@ async function loadMemberCards(memberId) {
   const type = state.cashierTab === 'renew' ? '' : 'stored';
   const cards = type ? d.list.filter((c) => c.card_type === type) : d.list;
   const sel = $('#csCard');
-  if (sel) sel.innerHTML = cards.map((c) => {
+  if (sel) sel.innerHTML = (state.cashierTab === 'renew' ? '<option value="">请选择要续费的会员卡</option>' : '') + cards.map((c) => {
     const status = c.status === 'void' ? '已作废' : c.status === 'refunded' ? '已退款' : c.status === 'frozen' ? '已冻结' : c.card_type === 'stored' ? fmtMoney(c.balance) : c.remaining_uses + '次';
     const disabled = ['void', 'refunded', 'frozen'].includes(c.status) ? ' disabled' : '';
     return `<option value="${c.id}"${disabled}>${esc(c.card_no)} · ${esc(c.card_name || '')} · ${status}</option>`;
@@ -842,37 +942,44 @@ async function loadMemberCards(memberId) {
 }
 function cashierRenewCard() {
   if (state.cashierTab !== 'renew') return;
-  const card = (state.cashierCards || []).find(c => String(c.id) === $('#csCard')?.value);
+  const value = $('#csCard')?.value;
+  const card = value ? (state.cashierCards || []).find(c => String(c.id) === String(value)) : null;
   const products = card ? (state.products || []).filter(p => p.type === card.card_type) : [];
-  if ($('#csProduct')) $('#csProduct').innerHTML = products.map(p => `<option value="${p.id}">${esc(p.name)} · ${fmtMoney(p.price)}</option>`).join('') || '<option value="">无同卡种续费卡项</option>';
+  if ($('#csProduct')) $('#csProduct').innerHTML = products.map(p => `<option value="${p.id}">${esc(p.name)} · ${fmtMoney(p.price)}</option>`).join('') || '<option value="">请先选择要续费的会员卡</option>';
   updateCashierTotal();
 }
 function updateCashierTotal() {
   const payable = cashierPayable();
   if ($('#csPayable')) $('#csPayable').textContent = fmtMoney(payable);
   const inp = $('#csPayAmount');
-  if (inp && !state.payManual) inp.value = payable;
+  if (inp) inp.value = payable;
 }
 async function submitCashier() {
   if (state.cashierSubmitting) return;
   const tab = state.cashierTab;
   const memberId = state.cashierMember?.id || '';
-  const payable = cashierToPay();
-  if (!Number.isFinite(payable) || payable < 0) { toast('实收金额不能为负数'); return; }
+  const payable = cashierPayable();
+  if (!Number.isFinite(payable) || payable < 0) { toast('应收金额无效'); return; }
   let payments = payable > 0 ? [{ pay_method: state.payMethod || 'cash', amount: payable }] : [];
   if ($('#csMixed').checked) {
     payments = $$('.cs-split').map(input => ({ pay_method: input.dataset.method, amount: Number(input.value) }));
     if (payments.some(p => !Number.isFinite(p.amount) || p.amount < 0)) { toast('拆分金额必须为非负数'); return; }
     payments = payments.filter(p => p.amount > 0);
   }
-  if (payments.reduce((n, p) => n + Math.round(p.amount * 100), 0) !== Math.round(cashierPayable() * 100)) { toast('支付合计必须等于应收金额'); return; }
+  if (payments.reduce((n, p) => n + Math.round(p.amount * 100), 0) !== Math.round(payable * 100)) { toast('支付合计必须等于应收金额，抹零请填写优惠金额'); return; }
   payments.forEach(p => { if (p.pay_method === 'stored' && $('#csStoredSource').value) p.source_card_id = Number($('#csStoredSource').value); });
-  if (tab === 'open' && !memberId && !($('#csName')?.value || '').trim()) { toast('请选择已有会员或填写新会员姓名'); return; }
+  const usingNewMember = tab === 'open' && state.cashierNewMember;
+  if (tab === 'open' && !memberId && !usingNewMember) { toast('请选择已有会员或填写新会员姓名'); return; }
+  if (tab === 'open' && !memberId && usingNewMember && !($('#csName')?.value || '').trim()) { toast('请填写新会员姓名'); return; }
   if (['renew', 'recharge'].includes(tab) && !memberId) { toast('请先查询并选择会员'); return; }
+  if (tab === 'renew' && !$('#csCard')?.value) { toast('请选择要续费的会员卡'); return; }
+  if (tab === 'recharge' && !$('#csCard')?.value) { toast('请选择要充值的储值卡'); return; }
   const body = {
     order_type: tab,
     member_id: memberId ? Number(memberId) : undefined,
-    name: $('#csName')?.value, phone: $('#csPhone')?.value, gender: $('#csGender')?.value || 'unknown',
+    name: usingNewMember ? $('#csName')?.value : undefined,
+    phone: usingNewMember ? $('#csPhone')?.value : undefined,
+    gender: usingNewMember ? ($('#csGender')?.value || 'unknown') : undefined,
     card_product_id: $('#csProduct')?.value ? Number($('#csProduct').value) : undefined,
     member_card_id: $('#csCard')?.value ? Number($('#csCard').value) : undefined,
     discount_amount: Number($('#csDiscount')?.value) || 0,
@@ -1025,13 +1132,18 @@ async function renderShifts() {
 }
 async function refreshShifts() {
   const cur = await api('/api/shifts/current');
+  const box = $('#shiftCurrent');
+  // 从首页/登录提醒开班时交班视图还没渲染，跳过而不是对 null 赋值。
+  if (!box) return;
   const canOperate = ['boss', 'frontdesk', 'admin'].includes(state.user?.role);
-  $('#shiftCurrent').innerHTML = cur.shift
+  box.innerHTML = cur.shift
     ? `<div class="flex-between"><div><b>当前班次</b> · 开始于 ${esc((cur.shift.started_at || '').replace('T', ' ').slice(0, 16))}</div>
        ${canOperate ? `<button class="btn btn-success" data-action="openShiftClose" data-id="${cur.shift.id}">交班对账</button>` : ''}</div>`
     : `<div class="flex-between"><div><b>暂无进行中班次</b></div>${canOperate ? `<button class="btn btn-primary" data-action="startShift">开始班次</button>` : ''}</div>`;
   const d = await api('/api/shifts');
-  $('#shiftsBody').innerHTML = d.list.map((s) => `<tr>
+  const body = $('#shiftsBody');
+  if (!body) return;
+  body.innerHTML = d.list.map((s) => `<tr>
     <td class="num">${s.id}</td><td>${esc(s.staff_name)}</td>
     <td class="num">${esc((s.started_at || '').replace('T', ' ').slice(0, 16))}</td>
     <td class="num">${s.ended_at ? esc(s.ended_at.replace('T', ' ').slice(0, 16)) : '—'}</td>
@@ -1046,7 +1158,15 @@ function startShift() {
     <div class="modal-body"><div class="field"><label>开班备用金（元）</label><input class="input" type="number" min="0" step="0.01" id="shiftOpeningCash" value="0"><div class="hint mt-8">钱箱中上个班次留下的现金，不属于本班收入，但会计入本班应交现金。</div></div></div>
     <div class="modal-foot"><button class="btn" data-action="closeModal">取消</button><button class="btn btn-primary" data-action="confirmStartShift">确认开班</button></div>`);
 }
-async function confirmStartShift(el) { if (el.disabled) return; el.disabled = true; try { await api('/api/shifts/start', { body: { opening_cash: $('#shiftOpeningCash').value } }); toast('已开班'); closeModal(); refreshShifts(); } catch (e) { el.disabled = false; toast(e.message, 'error'); } }
+async function confirmStartShift(el) {
+  if (el.disabled) return;
+  el.disabled = true;
+  try {
+    await api('/api/shifts/start', { body: { opening_cash: $('#shiftOpeningCash').value } });
+    toast('已开班'); closeModal();
+    if (currentView() === 'shifts') refreshShifts(); else renderDashboard();
+  } catch (e) { el.disabled = false; toast(e.message, 'error'); }
+}
 async function openShiftClose(el) {
   try {
     const d = await api('/api/shifts/' + el.dataset.id);
@@ -1077,15 +1197,26 @@ async function openShiftClose(el) {
 function updateShiftDiff() {
   const sum = state.shiftCloseSummary;
   if (!sum) return;
-  const actual = Number($('#scActual')?.value) || 0;
-  const diff = money2(actual - sum.cash_should);
   const el = $('#scDiff');
+  const raw = $('#scActual')?.value;
+  if (String(raw ?? '').trim() === '') {
+    if (el) { el.textContent = '—'; el.style.color = ''; }
+    return;
+  }
+  const actual = Number(raw) || 0;
+  const diff = money2(actual - sum.cash_should);
   if (el) {
     el.textContent = (diff >= 0 ? '+' : '') + fmtMoney(diff).replace('¥', '');
     el.style.color = Math.abs(diff) < 0.005 ? '#16a34a' : '#dc2626';
   }
 }
-async function confirmShiftClose(el) { if (el.disabled) return; el.disabled = true; try { await api(`/api/shifts/${el.dataset.id}/close`, { body: { actual_cash: $('#scActual').value, note: $('#scNote').value } }); toast('已交班'); closeModal(); refreshShifts(); } catch (e) { el.disabled = false; toast(e.message, 'error'); } }
+async function confirmShiftClose(el) {
+  if (el.disabled) return;
+  const actual = $('#scActual').value;
+  if (String(actual).trim() === '') { toast('请先清点现金并填写实点金额', 'error'); return; }
+  el.disabled = true;
+  try { await api(`/api/shifts/${el.dataset.id}/close`, { body: { actual_cash: actual, note: $('#scNote').value } }); toast('已交班'); closeModal(); refreshShifts(); } catch (e) { el.disabled = false; toast(e.message, 'error'); }
+}
 async function openShift(id) {
   const d = await api('/api/shifts/' + id);
   const sum = d.summary;
@@ -1236,15 +1367,21 @@ async function openStaffForm(id) {
     <div class="modal-foot"><button class="btn" data-action="closeModal">取消</button><button class="btn btn-primary" data-action="saveStaff" data-id="${u?.id || ''}">保存</button></div>`);
 }
 async function saveStaff(el) {
+  if (el.disabled) return;
+  el.disabled = true;
   const body = { username: $('#sfUsername').value, real_name: $('#sfName').value, role: $('#sfRole').value };
   if ($('#sfPassword').value) body.password = $('#sfPassword').value;
   try {
     if (el.dataset.id) await api('/api/staff/' + el.dataset.id, { method: 'PUT', body });
     else await api('/api/staff', { body });
     toast('已保存'); closeModal(); renderStaff();
-  } catch (e) { toast(e.message, 'error'); }
+  } catch (e) { el.disabled = false; toast(e.message, 'error'); }
 }
-async function toggleStaff(el) { try { await api('/api/staff/' + el.dataset.id, { method: 'DELETE' }); toast('已更新'); renderStaff(); } catch (e) { toast(e.message, 'error'); } }
+async function toggleStaff(el) {
+  if (el.disabled) return;
+  el.disabled = true;
+  try { await api('/api/staff/' + el.dataset.id, { method: 'DELETE' }); toast('已更新'); renderStaff(); } catch (e) { el.disabled = false; toast(e.message, 'error'); }
+}
 
 /* ============================= 操作日志 ============================= */
 async function renderLogs() {
@@ -1282,6 +1419,10 @@ async function refreshLogs() {
 
 /* ============================= 系统设置 ============================= */
 async function renderSettings() {
+  if (!state.settingsLoaded) {
+    $('#view-settings').innerHTML = `<div class="card"><div class="card-title">设置加载失败</div><div class="hint">未能读取系统设置。为避免用空值覆盖数据库里的门店配置，已禁用保存，请检查网络后重试。</div><button class="btn btn-primary mt-16" data-action="reloadSettings">重新加载</button></div>`;
+    return;
+  }
   const s = state.settings;
   const canEditProtected = state.user?.role === 'admin';
   state.brand_logo_img = s.brand_logo_img || '';
@@ -1349,6 +1490,7 @@ function clearLogoImg() { state.brand_logo_img = ''; $('#stLogoPreview').innerHT
 function clearLoginBg() { state.login_bg = ''; }
 function clearDashboardBg() { state.dashboard_bg = ''; }
 async function saveSettings() {
+  if (!state.settingsLoaded) { toast('设置未加载成功，请重新加载后再保存', 'error'); return; }
   try {
     const body = {
       store_name: $('#stStoreName').value, month_rule: $('#stMonth').value, default_entry_fee: $('#stEntryFee').value,
@@ -1434,6 +1576,8 @@ const logSearchDebounced = debounce(refreshLogs, 200);
 
 function handle(name, el) {
   switch (name) {
+    case 'retryView': render(el.dataset.view); break;
+    case 'reloadSettings': loadSettings().then(() => renderSettings()); break;
     case 'closeModal': closeModal(); break;
     case 'logout': doLogout(); break;
     case 'memberSearch': memberSearchDebounced(); break;
@@ -1447,8 +1591,6 @@ function handle(name, el) {
     case 'openMember': openMember(el.dataset.id); break;
     case 'addTag': addTag(el); break;
     case 'removeTag': removeTag(el); break;
-    case 'addFamily': addFamily(el); break;
-    case 'removeFamily': removeFamily(el); break;
     case 'openProductForm': openProductForm(el.dataset.id); break;
     case 'saveProduct': saveProduct(el); break;
     case 'toggleProduct': toggleProduct(el); break;
@@ -1462,6 +1604,7 @@ function handle(name, el) {
     case 'cardVoid': cardVoid(el); break;
     case 'confirmCardVoid': confirmCardVoid(el); break;
     case 'doCheckin': doCheckin(); break;
+    case 'retryCheckin': retryCheckin(); break;
     case 'confirmCheckin': confirmCheckin(el); break;
     case 'cashierTab': renderCashierForm(el.dataset.tab); break;
     case 'cashierMemberPick': cashierMemberPick(); break;
@@ -1471,8 +1614,7 @@ function handle(name, el) {
     case 'cashierExistingMember': cashierExistingMember(); break;
     case 'pickPayMethod': pickPayMethod(el); break;
     case 'toggleCashierFullscreen': toggleCashierFullscreen(); break;
-    case 'cashierAmount': state.payManual = false; updateCashierTotal(); break;
-    case 'cashierAmountManual': state.payManual = true; updateCashierTotal(); break;
+    case 'cashierAmount': updateCashierTotal(); break;
     case 'submitCashier': submitCashier(); break;
     case 'refreshOrders': refreshOrders(); break;
     case 'refreshStaffPerformance': refreshStaffPerformance(); break;

@@ -1,5 +1,8 @@
 'use strict';
 
+// 营业日按中国标准时间计算；必须在任何 Date 使用前设置，显式配置的 TZ 优先。
+if (!process.env.TZ) process.env.TZ = 'Asia/Shanghai';
+
 // 通用工具：日期、金额、编号等
 
 function pad(n) {
@@ -72,11 +75,17 @@ function genNo(prefix, n, width = 6) {
   return prefix + String(n).padStart(width, '0');
 }
 
-// 由某表当前最大 id 生成下一个编号
+// 编号列映射；生成下一个编号时取该列已有数字后缀的最大值，避免导入显式编号后与 MAX(id)+1 碰撞。
+const NUMBER_COLUMNS = { members: 'member_no', member_cards: 'card_no', orders: 'order_no' };
+
 function nextNo(db, table, prefix, width) {
-  const row = db.prepare(`SELECT MAX(id) AS mx FROM ${table}`).get();
-  const n = row && row.mx ? Number(row.mx) + 1 : 1;
-  return genNo(prefix, n, width);
+  const column = NUMBER_COLUMNS[table];
+  if (!column) throw new Error('不支持的编号表');
+  const row = db.prepare(`SELECT MAX(CAST(SUBSTR(${column}, ?) AS INTEGER)) AS mx FROM ${table} WHERE ${column} LIKE ?`)
+    .get(prefix.length + 1, prefix + '%');
+  const max = row && row.mx !== null ? Number(row.mx) : 0;
+  if (!Number.isSafeInteger(max) || max < 0) throw new Error('编号序列超出安全范围，请检查历史数据');
+  return genNo(prefix, max + 1, width);
 }
 
 module.exports = { pad, money, cents, today, now, fmtDate, addMonths, addDays, isDateString, genNo, nextNo };

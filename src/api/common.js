@@ -18,6 +18,7 @@ function atomic(handler) {
       return result;
     } catch (e) {
       if (started) { try { db.exec('ROLLBACK'); } catch (_) {} }
+      if (!e || !e.status || e.status >= 500) console.error('[事务] 业务写入失败:', (e && e.stack) || e);
       return fail(e.status || 500, e.status ? e.message : '业务写入失败，请重试');
     }
   };
@@ -56,9 +57,9 @@ function resolveMember(body) {
     if (dup) throw httpError(400, '该手机号已绑定其他会员，不可重复');
   }
   const ts = now();
-  const r = db.prepare(`INSERT INTO members(member_no, name, phone, gender, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, 'normal', ?, ?)`)
-    .run(nextMemberNo(), name, phone, body.gender || 'unknown', ts, ts);
+  const r = db.prepare(`INSERT INTO members(member_no, name, phone, gender, birthday, note, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'normal', ?, ?)`)
+    .run(nextMemberNo(), name, phone, body.gender || 'unknown', body.birthday || null, (body.note || '').trim() || null, ts, ts);
   return db.prepare('SELECT * FROM members WHERE id = ?').get(Number(r.lastInsertRowid));
 }
 

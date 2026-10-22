@@ -18,7 +18,7 @@ Page({
           statusClass: d.member.status === 'normal' ? 'green' : d.member.status === 'blacklist' ? 'red' : 'gray',
           tagsText: (d.member.tags || []).map((t) => t.tag_name).join('、')
         },
-        cards: d.cards.map((c) => ({ ...c, typeText: cardTypeLabel(c.card_type), typeClass: cardTypeClass(c.card_type), statusText: cardStatusLabel(c.status), statusClass: cardStatusClass(c.status), assetText: cardAssetText(c), canRecharge: c.card_type === 'stored' && !['void', 'refunded', 'frozen'].includes(c.status) })),
+        cards: d.cards.map((c) => ({ ...c, typeText: cardTypeLabel(c.card_type), typeClass: cardTypeClass(c.card_type), statusText: cardStatusLabel(c.status), statusClass: cardStatusClass(c.status), assetText: cardAssetText(c), extraText: ['count', 'stored'].includes(c.card_type) && c.end_at ? ' · 有效期至 ' + c.end_at : '', canRecharge: c.card_type === 'stored' && !['void', 'refunded', 'frozen'].includes(c.status) })),
         entries: d.entries.map((e) => ({ ...e, timeText: fmtDateTime(e.entry_at), resultOk: e.result === 'success' })),
         orders: d.orders.map((o) => ({ ...o, typeText: orderTypeLabel(o.order_type), statusText: orderStatusLabel(o.status), amountText: fmtMoney(o.paid_amount) }))
       });

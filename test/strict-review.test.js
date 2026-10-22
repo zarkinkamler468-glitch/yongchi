@@ -87,6 +87,8 @@ test('退款审批响应丢失后可重复确认，不增加支付流水或再�
 test('原路储值退款拒绝退入已作废来源卡，保持退款待审且资金权益不变', () => {
   const source = open('stored');
   const paid = open('count', source.member_id, [{ pay_method: 'stored', amount: 250, source_card_id: source.member_card_id }]);
+  // 新规则禁止作废仍有余额的储值卡，先把余额清零（模拟已退款）再作废。
+  db.prepare('UPDATE member_cards SET balance = 0 WHERE id = ?').run(source.member_card_id);
   assert.equal(cards.voidCard({ req: req('boss'), params: { id: source.member_card_id }, body: {} }).status, 200);
   const applied = orders.refundApply({ req: req('frontdesk'), params: { id: paid.id }, body: { amount: 250, reason: '作废来源卡退款' } });
   const before = { ...card(paid) }; const balance = card(source).balance;
@@ -260,7 +262,7 @@ test('Web续费选项只显示所选卡种，切换卡后刷新应收', () => {
 
 test('Web核销网络断开后再查询仍重试原请求，不能生成新编号重复扣减', async () => {
   const sent = []; let applied = 0; const seen = new Set();
-  const web = loadWeb({ '#ckResult': {}, '#toast': { classList: { toggle() {} } } }, async (url, opts) => {
+  const web = loadWeb({ '#ckKeyword': { value: 'C-original' }, '#ckPeople': { value: '1' }, '#ckGate': { value: '前台' }, '#ckResult': {}, '#toast': { classList: { toggle() {} } } }, async (url, opts) => {
     assert.equal(url, '/api/entries/checkin'); const body = JSON.parse(opts.body); sent.push(body);
     if (!seen.has(body.request_id)) { seen.add(body.request_id); applied++; }
     if (sent.length === 1) throw new Error('响应丢失');
@@ -285,7 +287,7 @@ test('Web收银未知结果期间不能改变订单参数，原参数重试保�
   assert.equal(web.state.cashierPending, null); assert.equal(web.state.checkinPending, null);
 });
 
-test('小程序核销断线后改变输入仍先确认原请求，不再查询或重复扣减', async () => {
+test('小程序核销断线后改输入先要求重试原请求，不查询也不扣新人', async () => {
   const sent = [];
   const page = loadPage('checkin/checkin.js', (url, opts) => {
     assert.equal(url, '/api/entries/checkin'); sent.push(opts.data);
@@ -295,6 +297,9 @@ test('小程序核销断线后改变输入仍先确认原请求，不再查询�
   page.confirm(); await tick();
   page.onInput({ currentTarget: { dataset: { key: 'keyword' } }, detail: { value: 'C-other' } });
   page.submit(); await tick();
+  assert.equal(sent.length, 1);
+  assert.equal(page.data.result.retry, true);
+  page.retryPendingCheckin(); await tick();
   assert.equal(sent.length, 2); assert.equal(sent[1].keyword, 'C-original'); assert.equal(sent[0].request_id, sent[1].request_id);
   assert.equal(page._pendingCheckin, null);
 });
@@ -317,7 +322,7 @@ test('小程序收银恢复页面时保持同卡种续费列表', async () => {
 test('小程序流水未审批及驳回退款显示零支出，已通过退款显示负数', async () => {
   const page = loadPage('orders/orders.js', () => Promise.resolve({ list: ['pending', 'void', 'paid'].map((status, id) => ({ id, status, order_type: 'refund', total_amount: 10, paid_amount: 0 })) }));
   page.load(); await tick();
-  assert.equal(page.data.list[0].amountText, '¥0'); assert.equal(page.data.list[1].amountText, '¥0'); assert.equal(page.data.list[2].amountText, '-¥10');
+  assert.equal(page.data.list[0].amountText, '¥0.00'); assert.equal(page.data.list[1].amountText, '¥0.00'); assert.equal(page.data.list[2].amountText, '-¥10.00');
 });
 
 test('冻结卡退款计入已暂停的期限，回收后保持冻结且解冻期限正确', () => {
@@ -348,7 +353,7 @@ test('审计写入故障时建档、转卡、退款申请及交班全部回滚',
     assert.equal(card(source).member_id, source.member_id);
     assert.equal(orders.refundApply({ req: req('frontdesk'), params: { id: source.id }, body: { amount: 25, reason: '不能残留的申请' } }).status, 500);
     assert.equal(db.prepare('SELECT COUNT(*) n FROM orders').get().n, orderCount);
-    assert.equal(shifts.close({ req: req('frontdesk'), params: { id: shift.id }, body: {} }).status, 500);
+    assert.equal(shifts.close({ req: req('frontdesk'), params: { id: shift.id }, body: { actual_cash: 0, note: '审计故障测试' } }).status, 500);
     assert.equal(db.prepare('SELECT status FROM shifts WHERE id=?').get(shift.id).status, 'active');
   } finally { db.exec('DROP TRIGGER strict_audit_fail'); }
 });

@@ -14,6 +14,10 @@ Page({
     brandIcon: '泳', brandLogoImg: '', loginBg: '', icpNo: '', pseNo: ''
   },
   onLoad() {
+    if (!BASE_URL) {
+      this.setData({ checking: false, error: '请先在 miniprogram/config.js 配置后端 HTTPS 域名（BASE_URL）' });
+      return;
+    }
     // 加载公开品牌配置（无需登录）
     request('/api/public-config').then((d) => {
       const settings = d.settings || {};

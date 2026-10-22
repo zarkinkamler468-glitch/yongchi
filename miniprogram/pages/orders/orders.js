@@ -26,7 +26,18 @@ Page({
       });
     }).catch((e) => { this.setData({ loading: false }); toast(e.message); });
   },
-  setScope(e) { const scope = e.currentTarget.dataset.scope; const labels = { income: '收入', refund: '退款', all: '全部' }; this.setData({ scope, scopeLabel: labels[scope], type: scope === 'income' || scope === 'refund' ? '' : this.data.type }); this.load(); },
+  setScope(e) {
+    const scope = e.currentTarget.dataset.scope;
+    const labels = { income: '收入', refund: '退款', all: '全部' };
+    const resetType = scope === 'income' || scope === 'refund';
+    this.setData({
+      scope, scopeLabel: labels[scope],
+      type: resetType ? '' : this.data.type,
+      typeLabel: resetType ? '全部类型' : this.data.typeLabel,
+      typeIndex: resetType ? 0 : this.data.typeIndex
+    });
+    this.load();
+  },
   onSearch(e) { this.setData({ search: e.detail.value }); },
   onType(e) { const values = ['', 'open', 'renew', 'recharge', 'refund']; const labels = ['全部类型', '开卡', '续费', '储值充值', '退款']; let i = Number(e.detail.value); if (this.data.scope === 'income' && i === 4) i = 0; this.setData({ type: values[i], typeLabel: labels[i], typeIndex: i }); },
   onStatus(e) { const values = ['', 'paid', 'partial_refund', 'refunded', 'pending', 'void']; const labels = ['全部状态', '已支付', '部分退款', '已退款', '待审批', '已作废']; const i = Number(e.detail.value); this.setData({ status: values[i], statusLabel: labels[i], statusIndex: i }); },

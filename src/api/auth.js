@@ -1,10 +1,12 @@
 'use strict';
 
 const https = require('node:https');
+const crypto = require('node:crypto');
 const { db, getSetting } = require('../db');
 const { verifyPassword, createToken } = require('../crypto');
 const { createSession, deleteSession, publicStaff } = require('../auth');
-const { ok, fail, httpError } = require('../http');
+const { ok, fail, httpError, clientIp } = require('../http');
+const audit = require('./audit');
 
 // ---------------- 登录爆破防护（内存计数，单实例够用） ----------------
 const loginAttempts = new Map(); // key: ip|username -> { count, until }
@@ -13,51 +15,91 @@ const LOGIN_WINDOW_MS = 10 * 60 * 1000;
 const LOGIN_LOCK_MS = 10 * 60 * 1000;
 
 function rateLimitKey(req, username) {
-  const ip = (req && req.socket && req.socket.remoteAddress) || '';
-  return ip + '|' + username;
+  return clientIp(req) + '|' + username;
+}
+// 清理过期的登录失败记录；Map 有上限，避免被随机用户名撑大内存。
+function pruneLoginAttempts(ts) {
+  for (const [key, rec] of loginAttempts) {
+    if (!rec || (!rec.until && ts - rec.last > LOGIN_WINDOW_MS)) loginAttempts.delete(key);
+  }
+  if (loginAttempts.size > 5000) {
+    let removed = 0;
+    for (const key of loginAttempts.keys()) {
+      loginAttempts.delete(key);
+      if (++removed >= 1000) break;
+    }
+  }
 }
 function checkRateLimit(req, username) {
+  pruneLoginAttempts(Date.now());
   const key = rateLimitKey(req, username);
   const rec = loginAttempts.get(key);
   if (rec && rec.until > Date.now()) return fail(429, '尝试次数过多，请 10 分钟后再试');
   return null;
 }
 function recordLoginFail(req, username) {
+  const ts = Date.now();
+  pruneLoginAttempts(ts);
   const key = rateLimitKey(req, username);
-  const now = Date.now();
   let rec = loginAttempts.get(key);
-  if (!rec || now - rec.last > LOGIN_WINDOW_MS) rec = { count: 0, last: now, until: 0 };
+  if (!rec || ts - rec.last > LOGIN_WINDOW_MS) rec = { count: 0, last: ts, until: 0 };
   rec.count += 1;
-  rec.last = now;
-  if (rec.count >= LOGIN_MAX_FAIL) { rec.until = now + LOGIN_LOCK_MS; rec.count = 0; }
+  rec.last = ts;
+  if (rec.count >= LOGIN_MAX_FAIL) { rec.until = ts + LOGIN_LOCK_MS; rec.count = 0; }
   loginAttempts.set(key, rec);
 }
 function clearLoginFails(req, username) {
   loginAttempts.delete(rateLimitKey(req, username));
 }
+// 登录日志不能影响登录本身：审计写入失败只记录到控制台。
+function safeLoginAudit(payload) {
+  try { audit.record(payload); } catch (e) { console.error('[审计] 登录日志写入失败:', (e && e.message) || e); }
+}
 
 // ---------------- 图形验证码 ----------------
 const captchaTokens = new Map(); // token -> { code, expires }
 
+const CAPTCHA_LEN = 6;
+
 function randomCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 去掉易混淆字符
+  const chars = '23456789'; // 去掉 0/1，减少与 8/7 的视觉混淆
   let s = '';
-  for (let i = 0; i < 4; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  for (let i = 0; i < CAPTCHA_LEN; i++) s += chars[crypto.randomInt(0, chars.length)];
   return s;
 }
+
+// 用七段矩形绘制数字，验证码不再以 <text> 明文出现在公开 SVG 中。
+const SEGMENTS = {
+  a: [3, 0, 10, 3], b: [13, 3, 3, 10], c: [13, 16, 3, 10],
+  d: [3, 26, 10, 3], e: [0, 16, 3, 10], f: [0, 3, 3, 10], g: [3, 13, 10, 3]
+};
+const DIGIT_SEGMENTS = {
+  0: 'abcdef', 1: 'bc', 2: 'abged', 3: 'abgcd', 4: 'fgbc',
+  5: 'afgcd', 6: 'afgecd', 7: 'abc', 8: 'abcdefg', 9: 'abcdfg'
+};
 function captchaSvg(code) {
-  const w = 128, h = 46;
-  let body = '';
-  for (let i = 0; i < 3; i++) {
-    const x1 = Math.random() * w, y1 = Math.random() * h, x2 = Math.random() * w, y2 = Math.random() * h;
-    body += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#cbd5e1" stroke-width="1"/>`;
-  }
+  const w = 168, h = 48, cell = 22, left = 14, top = 8;
   const colors = ['#2563eb', '#0ea5e9', '#7c3aed', '#16a34a', '#dc2626'];
+  let body = `<rect width="${w}" height="${h}" fill="#f8fafc"/>`;
+  for (let i = 0; i < 3; i++) {
+    const x1 = (Math.random() * w).toFixed(1), y1 = (Math.random() * h).toFixed(1);
+    const x2 = (Math.random() * w).toFixed(1), y2 = (Math.random() * h).toFixed(1);
+    body += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#cbd5e1" stroke-width="1"/>`;
+  }
   for (let i = 0; i < code.length; i++) {
-    const x = 18 + i * 26 + (Math.random() * 6 - 3);
-    const y = 32 + (Math.random() * 8 - 4);
-    const rot = (Math.random() * 30 - 15).toFixed(1);
-    body += `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" font-size="26" font-family="Arial" font-weight="bold" fill="${colors[i % colors.length]}" transform="rotate(${rot} ${x.toFixed(1)} ${y.toFixed(1)})">${code[i]}</text>`;
+    const x = left + i * cell + (Math.random() * 4 - 2);
+    const y = top + (Math.random() * 4 - 2);
+    const rot = (Math.random() * 10 - 5).toFixed(1);
+    const color = colors[i % colors.length];
+    body += `<g transform="rotate(${rot} ${(x + 8).toFixed(1)} ${(y + 14).toFixed(1)})">`;
+    for (const seg of DIGIT_SEGMENTS[code[i]] || '') {
+      const [dx, dy, sw, sh] = SEGMENTS[seg];
+      body += `<rect x="${(x + dx).toFixed(1)}" y="${(y + dy).toFixed(1)}" width="${sw}" height="${sh}" rx="1" fill="${color}"/>`;
+    }
+    body += '</g>';
+  }
+  for (let i = 0; i < 14; i++) {
+    body += `<circle cx="${(Math.random() * w).toFixed(1)}" cy="${(Math.random() * h).toFixed(1)}" r="${(Math.random() * 1.5 + 0.5).toFixed(1)}" fill="#94a3b8" opacity="0.5"/>`;
   }
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${body}</svg>`;
 }
@@ -132,12 +174,17 @@ function login({ body, req }) {
   const u = db.prepare('SELECT * FROM staff WHERE username = ?').get(username);
   if (!u || !verifyPassword(password, u.password_hash)) {
     recordLoginFail(req, username);
+    if (u) safeLoginAudit({ req, action: '登录失败', target_type: 'auth', target_id: u.id, reason: username });
     return fail(401, '账号或密码错误');
   }
-  if (u.status !== 'active') return fail(403, '该账号已被禁用');
+  if (u.status !== 'active') {
+    safeLoginAudit({ req, action: '登录失败', target_type: 'auth', target_id: u.id, reason: '账号已禁用' });
+    return fail(403, '该账号已被禁用');
+  }
   clearLoginFails(req, username);
   const { token } = createSession(u.id);
   req.user = u;
+  safeLoginAudit({ req, action: '登录系统', target_type: 'auth', target_id: u.id });
   return ok({ token, user: publicStaff(u), wx_bound: !!u.wx_openid });
 }
 
@@ -185,7 +232,10 @@ function wxBind({ body, req }) {
   // 该 openid 已绑定其他账号则拒绝
   const other = db.prepare('SELECT id FROM staff WHERE wx_openid = ? AND id != ?').get(rec.openid, u.id);
   if (other) { bindTokens.delete(bindToken); return fail(400, '该微信已绑定其他账号'); }
-  db.prepare('UPDATE staff SET wx_openid = ? WHERE id = ?').run(rec.openid, u.id);
+  try { db.prepare('UPDATE staff SET wx_openid = ? WHERE id = ?').run(rec.openid, u.id); } catch (e) {
+    if (String(e && e.message).includes('UNIQUE')) return fail(409, '该微信已绑定其他账号');
+    throw e;
+  }
   bindTokens.delete(bindToken);
   req.user = u;
   const { token } = createSession(u.id);

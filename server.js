@@ -1,5 +1,8 @@
 'use strict';
 
+// 必须在加载任何业务模块前确定营业日时区；显式 TZ 优先。
+if (!process.env.TZ) process.env.TZ = 'Asia/Shanghai';
+
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -96,9 +99,9 @@ const server = http.createServer(async (req, res) => {
     try {
       const handled = await router.handle(req, res);
       if (!handled) sendJSON(res, 404, { error: '接口不存在' });
-    } catch (_) {
+    } catch (e) {
       if (!res.headersSent && !res.destroyed) sendJSON(res, 500, { error: '服务器错误' });
-      console.error('[请求] 接口处理异常，请检查服务器状态');
+      console.error(`[请求] ${req.method} ${String(req.url || '').split('?')[0]} 未捕获异常:`, (e && e.stack) || e);
     }
     return;
   }
@@ -121,6 +124,9 @@ server.on('error', (err) => {
 
 if (require.main === module) server.listen(PORT, HOST, () => {
   prune(); // 启动时清理过期操作日志
+  // 长期运行也要按天清理过期会话与 90 天前的操作日志，否则保留策略只在重启时生效。
+  const pruneTimer = setInterval(prune, 6 * 60 * 60 * 1000);
+  if (pruneTimer.unref) pruneTimer.unref();
   console.log('==============================================');
   console.log(`  ${getSetting('store_name') || '游泳馆管理'} - 游泳池管理系统`);
   console.log('==============================================');

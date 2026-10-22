@@ -1,10 +1,15 @@
 'use strict';
 
-const { DatabaseSync } = require('node:sqlite');
+let DatabaseSync;
+try {
+  ({ DatabaseSync } = require('node:sqlite'));
+} catch (e) {
+  throw new Error('当前 Node.js 不支持 node:sqlite。请升级到 Node.js 22.13+，或使用 --experimental-sqlite 启动。');
+}
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
-const { today, now, addMonths, addDays, nextNo } = require('./util');
+const { now } = require('./util');
 const { hashPassword } = require('./crypto');
 
 const DEFAULT_DATA_DIR = path.join(__dirname, '..', 'data');
@@ -16,6 +21,8 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL;');
 db.exec('PRAGMA foreign_keys = ON;');
+// 备份工具或误开的第二个实例短暂持锁时，等待而不是立刻 SQLITE_BUSY 失败。
+db.exec('PRAGMA busy_timeout = 5000;');
 
 // settings 表最先创建，用于存放迁移标记与全局配置
 db.exec(`CREATE TABLE IF NOT EXISTS settings (
@@ -213,6 +220,14 @@ CREATE TABLE IF NOT EXISTS member_import_batches (
 
 // 旧库补齐微信绑定列
 ensureColumn('staff', 'wx_openid', 'wx_openid TEXT');
+// 已存在重复 openid 时不能建唯一索引；否则阻止同一微信绑定多个员工。
+try {
+  const dup = db.prepare("SELECT wx_openid FROM staff WHERE wx_openid IS NOT NULL GROUP BY wx_openid HAVING COUNT(*) > 1 LIMIT 1").get();
+  if (dup) console.warn('[数据检查] staff.wx_openid 存在重复值，暂不创建唯一索引，请人工核对微信绑定关系。');
+  else db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_wx_openid ON staff(wx_openid) WHERE wx_openid IS NOT NULL');
+} catch (e) {
+  console.warn('[数据检查] 创建 wx_openid 唯一索引失败：' + (e && e.message));
+}
 ensureColumn('orders', 'benefit_uses', 'benefit_uses INTEGER NOT NULL DEFAULT 0');
 ensureColumn('orders', 'benefit_amount', 'benefit_amount REAL NOT NULL DEFAULT 0');
 ensureColumn('orders', 'benefit_days', 'benefit_days INTEGER NOT NULL DEFAULT 0');
@@ -240,6 +255,14 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_orders_member ON orders(member_id);');
 db.exec('CREATE INDEX IF NOT EXISTS idx_orders_original ON orders(original_order_id);');
 db.exec('CREATE INDEX IF NOT EXISTS idx_payments_order_paid_at ON payments(order_id, paid_at);');
 db.exec('CREATE INDEX IF NOT EXISTS idx_entries_member_entry_at ON entries(member_id, entry_at);');
+// 卡项名称是会员导入匹配与收银选择的依据；有历史重名时跳过并告警，不阻塞启动。
+try {
+  const dup = db.prepare('SELECT name FROM card_products GROUP BY name HAVING COUNT(*) > 1 LIMIT 1').get();
+  if (dup) console.warn(`[数据检查] 卡项名称“${dup.name}”存在重名，暂不创建唯一索引，请人工整理。`);
+  else db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_card_products_name ON card_products(name)');
+} catch (e) {
+  console.warn('[数据检查] 创建卡项名称唯一索引失败：' + (e && e.message));
+}
 
 // 不再根据当前卡项猜测历史授予权益。缺失快照的历史退款交由人工核算。
 // 兼容现有库的约束使用触发器，不重建或覆盖业务表。
@@ -288,7 +311,7 @@ function initSettings() {
 
 function getSettings() {
   const rows = db.prepare('SELECT key, value FROM settings').all();
-  const out = {};
+  const out = Object.create(null);
   for (const r of rows) out[r.key] = r.value;
   return out;
 }
@@ -301,19 +324,29 @@ function getSetting(key) {
 function setSettings(patch) {
   const upsert = db.prepare('INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
   for (const [k, v] of Object.entries(patch)) {
-    if (k in DEFAULT_SETTINGS || k === 'store_name') upsert.run(k, String(v));
+    if (Object.hasOwn(DEFAULT_SETTINGS, k) || k === 'store_name') upsert.run(k, String(v));
   }
 }
 
 // ---------------------------------------------------------------------------
 // 种子数据
 // ---------------------------------------------------------------------------
-function initialPassword(envName, label) {
+function initialPassword(envName) {
   const configured = String(process.env[envName] || '');
-  if (configured.length >= 8) return configured;
-  const generated = crypto.randomBytes(18).toString('base64url');
-  if (process.env.NODE_ENV !== 'test') console.warn(`[安全提示] ${label} 使用随机初始密码，请从启动日志中获取并立即修改。`);
-  return generated;
+  if (configured.length >= 8) return { password: configured, generated: false };
+  return { password: crypto.randomBytes(18).toString('base64url'), generated: true };
+}
+function writeInitialPasswords(rows) {
+  const file = path.join(DATA_DIR, 'initial-passwords.txt');
+  const content = [
+    '游泳池管理系统初始账号（首次登录后请立即修改密码并删除本文件）',
+    '',
+    ...rows.map(({ username, password }) => `${username}\t${password}`),
+    ''
+  ].join('\n');
+  fs.writeFileSync(file, content, { mode: 0o600 });
+  try { fs.chmodSync(file, 0o600); } catch (_) { /* Windows 等平台可能不支持 */ }
+  return file;
 }
 function seedStaff() {
   const n = db.prepare('SELECT COUNT(*) AS n FROM staff').get().n;
@@ -326,10 +359,15 @@ function seedStaff() {
     ['frontdesk', 'PMS_INITIAL_FRONTDESK_PASSWORD', '前台小陈', 'frontdesk'],
     ['finance', 'PMS_INITIAL_FINANCE_PASSWORD', '财务小李', 'finance']
   ];
+  const generated = [];
   for (const [username, envName, realName, role] of credentials) {
-    const password = initialPassword(envName, `${username} 账号`);
+    const { password, generated: isGenerated } = initialPassword(envName);
     ins.run(username, hashPassword(password), realName, role, 'active', ts);
-    if (process.env.NODE_ENV !== 'test') console.warn(`[初始账号] ${username} 初始密码：${password}`);
+    if (isGenerated) generated.push({ username, password });
+  }
+  if (generated.length) {
+    const file = writeInitialPasswords(generated);
+    if (process.env.NODE_ENV !== 'test') console.warn(`[初始账号] 随机初始密码已写入 ${file}（权限 600），请登录后修改并删除该文件。`);
   }
 }
 
