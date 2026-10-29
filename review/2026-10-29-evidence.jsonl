@@ -1,0 +1,12 @@
+{"id":"A01-static-path","outcome":"static handler rejects outside request error boundary","code":"ERR_INVALID_ARG_VALUE"}
+{"id":"A02-expired-renew-unlimited","outcome":"paid renewal added uses but card still unusable","remaining_uses":20,"end_at":"2026-10-28","preview":"卡已过期"}
+{"id":"A03-unlimited-renew-refund","outcome":"original unlimited uses now expire today after full renewal refund","remaining_uses":10,"end_at":"2026-10-29"}
+{"id":"A04-frozen-extension","outcome":"30-day extension grants 40 effective days","expected_end":"2026-12-08","actual_end":"2026-12-18"}
+{"id":"A05-web-invalid-json","outcome":"unreadable success response resolves empty object and permits clearing pending request"}
+{"id":"A06-refund-request-conflict","outcome":"same refund ID reused across orders and retained after definite conflict","urls":["/api/orders/1/refund","/api/orders/2/refund","/api/orders/2/refund"]}
+{"id":"A07-pending-reload","outcome":"new page context loses unresolved identity; resubmission with a new ID deducts again","deductions":2}
+{"id":"A08-refund-without-cash-custodian","outcome":"cash refund approved with no shift; no shift cash reconciliation includes it","amount":10,"shift_id":null}
+{"id":"A09-import-number-overflow","outcome":"accepted import makes all subsequent automatic member numbers fail","error":"Value is too large to be represented as a JavaScript number: 9223372036854775807"}
+{"id":"A10-inaccessible-card-pages","outcome":"card account page stops at 1100 of 1200 records, with no paging/search control","loaded":1100,"total":1200}
+{"id":"A11-member-refund-amount","outcome":"paid 25-yuan refund displayed as zero in member details","displayed":"¥0.00","expected":"-25 yuan"}
+{"confirmed":11}
