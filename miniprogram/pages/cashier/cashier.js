@@ -1,4 +1,4 @@
-const { request, toast } = require('../../utils/request');
+const { request, toast, pendingTransactions } = require('../../utils/request');
 const { fmtMoney, payLabel } = require('../../utils/util');
 
 Page({
@@ -19,6 +19,13 @@ Page({
     submitting: false, checkinSubmitting: false, requestId: '', checkinRequestId: ''
   },
   onShow() {
+    // 其他页面完成恢复后，清除本页已失效的重试快照。
+    if (typeof pendingTransactions === 'function') {
+      const pending = pendingTransactions();
+      if (!pending.some(p => p.scope === 'cashier')) { this._pendingSale = null; this.setData({ requestId: '' }); }
+      if (!pending.some(p => p.scope === 'checkin')) { this._pendingCheckin = null; this.setData({ checkinRequestId: '', checkinPreview: null }); }
+    }
+
     // 财务角色没有收银权限，直接给出说明页，避免进入后满屏 403。
     const user = wx.getStorageSync('user') || {};
     const allowed = ['boss', 'frontdesk', 'admin'].includes(user.role);
@@ -71,7 +78,7 @@ Page({
     this._pendingCheckin = { ...p };
     request('/api/entries/checkin', { data: { keyword: p.keyword, card_id: p.card && p.card.id, people: p.people, gate_no: '小程序收银', confirmed: true, request_id: rid } })
       .then((d) => { this._pendingCheckin = null; this.setData({ checkinSubmitting: false, checkinRequestId: '', checkinPreview: null, checkinResult: { ok: true, pending: false, name: d.member.name, phone: d.member.phone, card: d.card.card_name, asset: d.card.card_type === 'count' ? `核销成功，剩余 ${d.card.remaining_uses} 次` : d.card.card_type === 'stored' ? `核销成功，余额 ${d.card.balance} 元` : `核销成功，有效期至 ${d.card.end_at || '—'}` } }); })
-      .catch((e) => { const rejected = e.status >= 400 && e.status < 500; if (rejected) this._pendingCheckin = null; this.setData({ checkinSubmitting: false, checkinRequestId: rejected ? '' : rid, checkinResult: { ok: false, error: e.message } }); });
+      .catch((e) => { const rejected = [400, 422].includes(e.status); if (rejected) this._pendingCheckin = null; this.setData({ checkinSubmitting: false, checkinRequestId: rejected ? '' : rid, checkinResult: { ok: false, error: e.message } }); });
   },
   retryPendingCheckin() {
     if (!this._pendingCheckin) return;
@@ -141,7 +148,10 @@ Page({
   },
   filterRenewProducts(card) {
     if (this.data.tab !== 'renew') return;
-    const products = card && card.card_type ? this.data.allProducts.filter((p) => p.type === card.card_type) : [];
+    // 有期限卡不能续 0 天卡项；在付款前就把它从下拉里排除。
+    const products = card && card.card_type
+      ? this.data.allProducts.filter((p) => p.type === card.card_type && (!card.end_at || Number(p.duration_days) > 0))
+      : [];
     this.setData({ products, productIndex: 0 }); this.compute();
   },
   onInput(e) { this.setData({ [e.currentTarget.dataset.key]: e.detail.value }); this.compute(); },
@@ -203,6 +213,6 @@ Page({
       wx.showModal({ title: '收款成功', content: fmtMoney(d.amount), showCancel: false, confirmText: '继续' });
       this.setData({ submitting: false, requestId: '', mixedPay: false, splitCash: '', splitWechat: '', splitAlipay: '', splitStored: '', storedCards: [], storedCardIndex: 0, memberMode: tab === 'open' ? 'new' : 'existing', memberIndex: 0, selectedMember: null, memberQuery: '', memberResults: [], newName: '', newPhone: '', newGender: 'unknown', discount: '0', amount: '100', cards: [], cardOptions: [], cardIndex: 0 });
       this.loadBase();
-    }).catch((e) => { wx.hideLoading(); const rejected = e.status >= 400 && e.status < 500; if (rejected) this._pendingSale = null; this.setData({ submitting: false, requestId: rejected ? '' : rid }); toast(e.message); });
+    }).catch((e) => { wx.hideLoading(); const rejected = [400, 422].includes(e.status); if (rejected) this._pendingSale = null; this.setData({ submitting: false, requestId: rejected ? '' : rid }); toast(e.message); });
   }
 });

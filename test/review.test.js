@@ -292,7 +292,9 @@ test('日结后阻止新业务，重开须老板和原因，重结后再次锁�
     assert.equal(closings.reopen({ req: req('finance'), params: { date: today() }, body: { reason: '补录' } }).status, 403);
     assert.equal(closings.reopen({ req: req('boss'), params: { date: today() }, body: {} }).status, 400);
     assert.equal(closings.reopen({ req: req('boss'), params: { date: today() }, body: { reason: '补录收款' } }).status, 200);
-    open('count'); assert.equal(approve(pending).status, 200);
+    open('count');
+    assert.equal(shifts.start({ req: req('boss'), body: { opening_cash: 0 } }).status, 201);
+    assert.equal(approve(pending).status, 200);
     db.prepare("UPDATE shifts SET status='closed'").run();
     assert.equal(closings.create({ req: req('finance'), body: { business_date: today() } }).status, 200);
     assert.equal(sale('count').status, 409);
@@ -342,7 +344,7 @@ test('Web 混合支付提交多笔并拒绝错误合计，保留请求快照', a
 test('Web 核销确认发送冻结的预览参数，不重新读取人数输入框', async () => {
   let sent;
   const { web } = loadWeb({ '#ckPeople': { value: '3' }, '#ckResult': {}, '#toast': {} }, async (url, opts) => {
-    sent = JSON.parse(opts.body); return { status: 200, ok: true, json: async () => ({}) };
+    sent = JSON.parse(opts.body); return { status: 200, ok: true, json: async () => ({ card: { id: 7 } }) };
   });
   web.state.checkinPreview = { keyword: 'C-confirmed', people: 1, card_id: 7, gate_no: '前台' };
   await web.confirmCheckin({ disabled: false });

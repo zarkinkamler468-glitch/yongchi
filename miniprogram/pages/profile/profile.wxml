@@ -1,4 +1,15 @@
 <view class="page">
+  <view class="card" wx:if="{{pending.length}}">
+    <view class="card-title">待确认业务</view>
+    <view wx:for="{{pending}}" wx:key="scope" class="pending-item">
+      <view wx:if="{{item.corrupt}}">待确认{{item.label}}记录损坏，请核对流水后放弃。</view>
+      <view wx:else>有待确认{{item.label}}{{item.createdText ? '（' + item.createdText + '）' : ''}}，请先恢复原请求。</view>
+      <view class="pending-actions">
+        <button wx:if="{{!item.corrupt}}" class="btn" data-scope="{{item.scope}}" bindtap="recoverPending" disabled="{{recovering}}">恢复上一笔{{item.label}}</button>
+        <button class="btn" data-scope="{{item.scope}}" bindtap="abandonPending" disabled="{{recovering}}">核对后放弃</button>
+      </view>
+    </view>
+  </view>
   <view class="card user-card">
     <view class="avatar">泳</view>
     <view class="user-info">

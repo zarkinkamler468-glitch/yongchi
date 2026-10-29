@@ -338,10 +338,13 @@ test('财务不参与班次且财务审批退款不会创建或改写班次', ()
   assert.equal(self.status, 403);
   assert.equal(shiftsApi.start({ req: req('finance'), body: { opening_cash: 0 } }).status, 403);
   assert.equal(shiftsApi.current({ req: req('finance') }).status, 403);
+  assert.equal(orders.refundApprove({ params: { id: refund.id }, body: { refund_method: 'cash' }, req: req('finance') }).status, 400);
+  const started = shiftsApi.start({ req: req('frontdesk'), body: { opening_cash: 0 } });
+  assert.equal(started.status, 201);
   const approved = orders.refundApprove({ params: { id: refund.id }, body: { refund_method: 'cash' }, req: req('finance') });
   assert.equal(approved.status, 200, approved.body.error);
   const shiftId = db.prepare('SELECT shift_id FROM orders WHERE id = ?').get(refund.id).shift_id;
-  assert.equal(shiftId, null);
+  assert.equal(shiftId, started.body.shift.id);
   assert.equal(db.prepare("SELECT COUNT(*) n FROM shifts WHERE staff_id = ? AND status = 'active'").get(staff.finance.id).n, 0);
   assert.equal(db.prepare('SELECT status FROM shifts WHERE id = ?').get(originalShiftId).status, 'closed');
 

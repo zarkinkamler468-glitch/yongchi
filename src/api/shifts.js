@@ -10,6 +10,11 @@ const { paginate } = require('./pagination');
 function canUseShift(req) {
   return req && req.user && ['boss', 'frontdesk', 'admin'].includes(req.user.role);
 }
+// 内部幂等字段不对外下发。
+function withoutInternal(row) {
+  const { request_id, request_hash, ...rest } = row;
+  return rest;
+}
 
 function shiftSummary(shiftId) {
   const rows = db.prepare(`
@@ -80,7 +85,7 @@ function get({ params, req }) {
   const s = db.prepare('SELECT * FROM shifts WHERE id = ?').get(params.id);
   if (!s) return fail(404, '班次不存在');
   if (req.user.role === 'frontdesk' && Number(s.staff_id) !== Number(req.user.id)) return fail(403, '前台只能查看自己的班次');
-  const orders = db.prepare('SELECT * FROM orders WHERE shift_id = ? ORDER BY id DESC').all(s.id);
+  const orders = db.prepare('SELECT * FROM orders WHERE shift_id = ? ORDER BY id DESC').all(s.id).map(withoutInternal);
   const summary = shiftSummary(s.id);
   return ok({ shift: decorate(s), summary, orders });
 }

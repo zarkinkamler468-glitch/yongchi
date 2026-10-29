@@ -266,7 +266,7 @@ test('Web核销网络断开后再查询仍重试原请求，不能生成新编�
     assert.equal(url, '/api/entries/checkin'); const body = JSON.parse(opts.body); sent.push(body);
     if (!seen.has(body.request_id)) { seen.add(body.request_id); applied++; }
     if (sent.length === 1) throw new Error('响应丢失');
-    return { status: 200, ok: true, json: async () => ({}) };
+    return { status: 200, ok: true, json: async () => ({ card: { id: 1 } }) };
   });
   web.state.checkinPreview = { keyword: 'C-original', card_id: 1, people: 1, gate_no: '前台' };
   await web.confirmCheckin({ disabled: false });

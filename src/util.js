@@ -81,11 +81,18 @@ const NUMBER_COLUMNS = { members: 'member_no', member_cards: 'card_no', orders: 
 function nextNo(db, table, prefix, width) {
   const column = NUMBER_COLUMNS[table];
   if (!column) throw new Error('不支持的编号表');
-  const row = db.prepare(`SELECT MAX(CAST(SUBSTR(${column}, ?) AS INTEGER)) AS mx FROM ${table} WHERE ${column} LIKE ?`)
+  // 超长/非数字外部编号不参与系统序列；先过滤再 CAST，避免驱动读取超大整数即抛错。
+  const row = db.prepare(`SELECT MAX(CASE WHEN LENGTH(suffix) BETWEEN 1 AND 15 AND suffix NOT GLOB '*[^0-9]*'
+    THEN CAST(suffix AS INTEGER) ELSE 0 END) AS mx FROM
+    (SELECT SUBSTR(${column}, ?) AS suffix FROM ${table} WHERE ${column} LIKE ?)`)
     .get(prefix.length + 1, prefix + '%');
   const max = row && row.mx !== null ? Number(row.mx) : 0;
   if (!Number.isSafeInteger(max) || max < 0) throw new Error('编号序列超出安全范围，请检查历史数据');
-  return genNo(prefix, max + 1, width);
+  let candidate = max + 1;
+  const exists = db.prepare(`SELECT 1 FROM ${table} WHERE ${column} = ?`);
+  while (exists.get(genNo(prefix, candidate, width))) candidate += 1;
+  if (!Number.isSafeInteger(candidate)) throw new Error('编号序列超出安全范围，请检查历史数据');
+  return genNo(prefix, candidate, width);
 }
 
 module.exports = { pad, money, cents, today, now, fmtDate, addMonths, addDays, isDateString, genNo, nextNo };

@@ -34,9 +34,9 @@ test.after(() => {
   fs.rmSync(testDir, { recursive: true, force: true });
 });
 
-test('代理 IP：默认只信任内网直连的转发头，可用 TRUST_PROXY 显式覆盖', () => {
+test('代理 IP：默认忽略转发头，显式配置才信任单层代理', () => {
   const make = (remote, forwarded) => ({ socket: { remoteAddress: remote }, headers: forwarded ? { 'x-forwarded-for': forwarded } : {} });
-  assert.equal(clientIp(make('172.17.0.1', '203.0.113.9, 172.17.0.1')), '203.0.113.9');
+  assert.equal(clientIp(make('172.17.0.1', '203.0.113.9, 172.17.0.1')), '172.17.0.1');
   assert.equal(clientIp(make('203.0.113.5', '1.2.3.4')), '203.0.113.5');
   process.env.TRUST_PROXY = '1';
   assert.equal(clientIp(make('203.0.113.5', '1.2.3.4')), '1.2.3.4');
@@ -148,7 +148,7 @@ test('Web 核销有未确认请求时改输入会阻止新核销，并可显式�
     window: { addEventListener() {} },
     localStorage: { getItem: () => '', setItem() {}, removeItem() {} },
     location: { hash: '#/checkin' },
-    fetch: async (url, opts) => { calls.push({ url, body: JSON.parse(opts.body) }); return { status: 200, ok: true, json: async () => ({}) }; },
+    fetch: async (url, opts) => { calls.push({ url, body: JSON.parse(opts.body) }); return { status: 200, ok: true, json: async () => ({ card: { id: 9 } }) }; },
     setTimeout: () => 0,
     clearTimeout,
     URL,

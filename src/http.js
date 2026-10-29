@@ -1,12 +1,14 @@
 'use strict';
 
 const { URL } = require('node:url');
+const { isIP } = require('node:net');
 
 function sendJSON(res, status, data) {
   const body = JSON.stringify(data);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Content-Length': Buffer.byteLength(body)
+    'Content-Length': Buffer.byteLength(body),
+    'Cache-Control': 'no-store'
   });
   res.end(body);
 }
@@ -26,29 +28,21 @@ function httpError(status, message) {
   return e;
 }
 
-// 反向代理后的真实客户端地址。TRUST_PROXY=1 总是信任代理头，=0 总是不信任；
-// 未设置时只在直连方是回环/内网地址（典型的 Nginx/1Panel 反代）时信任，
-// 避免默认部署把所有人算成同一个代理 IP，也避免公网直连时被伪造请求头绕过限流。
-function isPrivateAddress(address) {
-  const addr = String(address || '').replace(/^::ffff:/, '');
-  if (!addr) return false;
-  if (addr === '::1' || addr === '127.0.0.1') return true;
-  if (/^10\./.test(addr) || /^192\.168\./.test(addr) || /^172\.(1[6-9]|2\d|3[01])\./.test(addr)) return true;
-  if (/^f[cd][0-9a-f]{2}:/i.test(addr)) return true;
-  return false;
-}
+// 默认不信任转发头。单层代理可设置 TRUST_PROXY 为直连代理 IP 列表；
+// TRUST_PROXY=1 仅适用于后端端口已隔离、只能由可信代理访问的部署。
 function clientIp(req) {
   const remote = (req && req.socket && req.socket.remoteAddress) || '';
   const mode = String(process.env.TRUST_PROXY || '').trim();
-  if (mode === '0') return remote;
-  if (mode === '1' || isPrivateAddress(remote)) {
+  const trusted = mode === '1' || mode.split(',').some(ip => ip && ip.trim() === String(remote).replace(/^::ffff:/, ''));
+  if (trusted) {
     const forwarded = req && req.headers && req.headers['x-forwarded-for'];
     if (forwarded) {
-      const first = String(forwarded).split(',')[0].trim();
-      if (first) return first;
+      // 单层代理只信任紧邻代理追加/覆盖的最后一项，不信任客户端可控制的首项。
+      const last = String(forwarded).split(',').pop().trim();
+      if (isIP(last)) return last;
     }
     const real = req && req.headers && req.headers['x-real-ip'];
-    if (real) return String(real).trim();
+    if (real && isIP(String(real).trim())) return String(real).trim();
   }
   return remote;
 }

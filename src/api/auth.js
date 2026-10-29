@@ -7,6 +7,7 @@ const { verifyPassword, createToken } = require('../crypto');
 const { createSession, deleteSession, publicStaff } = require('../auth');
 const { ok, fail, httpError, clientIp } = require('../http');
 const audit = require('./audit');
+const { captchaPng } = require('../captcha');
 
 // ---------------- 登录爆破防护（内存计数，单实例够用） ----------------
 const loginAttempts = new Map(); // key: ip|username -> { count, until }
@@ -68,62 +69,37 @@ function randomCode() {
   return s;
 }
 
-// 用七段矩形绘制数字，验证码不再以 <text> 明文出现在公开 SVG 中。
-const SEGMENTS = {
-  a: [3, 0, 10, 3], b: [13, 3, 3, 10], c: [13, 16, 3, 10],
-  d: [3, 26, 10, 3], e: [0, 16, 3, 10], f: [0, 3, 3, 10], g: [3, 13, 10, 3]
-};
-const DIGIT_SEGMENTS = {
-  0: 'abcdef', 1: 'bc', 2: 'abged', 3: 'abgcd', 4: 'fgbc',
-  5: 'afgcd', 6: 'afgecd', 7: 'abc', 8: 'abcdefg', 9: 'abcdfg'
-};
-function captchaSvg(code) {
-  const w = 168, h = 48, cell = 22, left = 14, top = 8;
-  const colors = ['#2563eb', '#0ea5e9', '#7c3aed', '#16a34a', '#dc2626'];
-  let body = `<rect width="${w}" height="${h}" fill="#f8fafc"/>`;
-  for (let i = 0; i < 3; i++) {
-    const x1 = (Math.random() * w).toFixed(1), y1 = (Math.random() * h).toFixed(1);
-    const x2 = (Math.random() * w).toFixed(1), y2 = (Math.random() * h).toFixed(1);
-    body += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#cbd5e1" stroke-width="1"/>`;
-  }
-  for (let i = 0; i < code.length; i++) {
-    const x = left + i * cell + (Math.random() * 4 - 2);
-    const y = top + (Math.random() * 4 - 2);
-    const rot = (Math.random() * 10 - 5).toFixed(1);
-    const color = colors[i % colors.length];
-    body += `<g transform="rotate(${rot} ${(x + 8).toFixed(1)} ${(y + 14).toFixed(1)})">`;
-    for (const seg of DIGIT_SEGMENTS[code[i]] || '') {
-      const [dx, dy, sw, sh] = SEGMENTS[seg];
-      body += `<rect x="${(x + dx).toFixed(1)}" y="${(y + dy).toFixed(1)}" width="${sw}" height="${sh}" rx="1" fill="${color}"/>`;
-    }
-    body += '</g>';
-  }
-  for (let i = 0; i < 14; i++) {
-    body += `<circle cx="${(Math.random() * w).toFixed(1)}" cy="${(Math.random() * h).toFixed(1)}" r="${(Math.random() * 1.5 + 0.5).toFixed(1)}" fill="#94a3b8" opacity="0.5"/>`;
-  }
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${body}</svg>`;
-}
-function captcha() {
+// 验证码只是辅助防护；签发同时限速、限制总量，避免 CPU / 内存无界增长。
+const captchaIssuance = new Map();
+const CAPTCHA_WINDOW_MS = 60000;
+const CAPTCHA_IP_LIMIT = 20;
+const CAPTCHA_CAPACITY = 1000;
+function captcha({ req } = {}) {
   const ts = Date.now();
-  for (const [key, rec] of captchaTokens) if (!rec || rec.expires < ts) captchaTokens.delete(key);
+  for (const [key, rec] of captchaTokens) if (!rec || rec.expires <= ts) captchaTokens.delete(key);
+  for (const [key, rec] of captchaIssuance) if (rec.until <= ts) captchaIssuance.delete(key);
+  const ip = clientIp(req);
+  const recent = captchaIssuance.get(ip);
+  if (recent && recent.count >= CAPTCHA_IP_LIMIT) return fail(429, '验证码请求过于频繁，请稍后再试');
+  if (captchaTokens.size >= CAPTCHA_CAPACITY || (!recent && captchaIssuance.size >= CAPTCHA_CAPACITY)) return fail(429, '验证码服务繁忙，请稍后再试');
   const code = randomCode();
   const token = createToken();
-  captchaTokens.set(token, { code, expires: Date.now() + 5 * 60 * 1000 });
-  return ok({ captcha_token: token, svg: captchaSvg(code), image_path: '/api/auth/captcha-image?token=' + encodeURIComponent(token) });
+  const image = captchaPng(code);
+  captchaTokens.set(token, { code, image, expires: ts + 5 * 60 * 1000 });
+  captchaIssuance.set(ip, { count: (recent ? recent.count : 0) + 1, until: recent ? recent.until : ts + CAPTCHA_WINDOW_MS });
+  return ok({ captcha_token: token, image_path: '/api/auth/captcha-image?token=' + encodeURIComponent(token) });
 }
-// 小程序 image 组件直接使用服务端 SVG 地址；令牌仍由登录请求一次性消费。
 function captchaImage({ query, res }) {
   const token = (query.get('token') || '').trim();
   const rec = captchaTokens.get(token);
-  if (!rec || rec.expires < Date.now()) {
+  if (!rec || rec.expires <= Date.now()) {
     captchaTokens.delete(token);
-    res.writeHead(404, { 'Content-Type': 'image/svg+xml; charset=utf-8' });
-    res.end('');
+    res.writeHead(404, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+    res.end();
     return null;
   }
-  const svg = captchaSvg(rec.code);
-  res.writeHead(200, { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'no-store' });
-  res.end(svg);
+  res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+  res.end(rec.image);
   return null;
 }
 function verifyCaptcha(token, code) {

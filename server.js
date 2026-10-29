@@ -66,51 +66,61 @@ function getToken(req) {
 }
 
 const server = http.createServer(async (req, res) => {
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-  res.setHeader('Referrer-Policy', 'same-origin');
-  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'");
-  let url;
-  try { url = new URL(req.url, 'http://localhost'); } catch (_) {
-    sendJSON(res, 400, { error: '请求地址格式无效' });
-    return;
-  }
-  let pathname;
   try {
-    pathname = decodeURIComponent(url.pathname);
-  } catch (_) {
-    sendJSON(res, 400, { error: '请求路径格式无效' });
-    return;
-  }
-  if (pathname.startsWith('/api/')) {
-    // 公开接口：账号登录 / 微信登录 / 微信绑定；其余接口需登录令牌
-    const PUBLIC = ['/api/auth/login', '/api/auth/wxlogin', '/api/auth/wxbind', '/api/auth/captcha', '/api/auth/captcha-image', '/api/public-config'];
-    if (!PUBLIC.includes(pathname)) {
-      const token = getToken(req);
-      const user = findStaffByToken(token);
-      if (!user) {
-        sendJSON(res, 401, { error: '未登录或登录已过期' });
-        return;
-      }
-      req.user = user;
-      req.authToken = token;
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Referrer-Policy', 'same-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'");
+    let url;
+    try { url = new URL(req.url, 'http://localhost'); } catch (_) {
+      sendJSON(res, 400, { error: '请求地址格式无效' });
+      return;
     }
+    let pathname;
     try {
-      const handled = await router.handle(req, res);
-      if (!handled) sendJSON(res, 404, { error: '接口不存在' });
-    } catch (e) {
-      if (!res.headersSent && !res.destroyed) sendJSON(res, 500, { error: '服务器错误' });
-      console.error(`[请求] ${req.method} ${String(req.url || '').split('?')[0]} 未捕获异常:`, (e && e.stack) || e);
+      pathname = decodeURIComponent(url.pathname);
+    } catch (_) {
+      sendJSON(res, 400, { error: '请求路径格式无效' });
+      return;
     }
-    return;
+    if (/[\u0000-\u001f\u007f]/.test(pathname)) {
+      sendJSON(res, 400, { error: '请求路径包含无效字符' });
+      return;
+    }
+    if (pathname.startsWith('/api/')) {
+      // 公开接口：账号登录 / 微信登录 / 微信绑定；其余接口需登录令牌
+      const PUBLIC = ['/api/auth/login', '/api/auth/wxlogin', '/api/auth/wxbind', '/api/auth/captcha', '/api/auth/captcha-image', '/api/public-config'];
+      if (!PUBLIC.includes(pathname)) {
+        const token = getToken(req);
+        const user = findStaffByToken(token);
+        if (!user) {
+          sendJSON(res, 401, { error: '未登录或登录已过期' });
+          return;
+        }
+        req.user = user;
+        req.authToken = token;
+      }
+      try {
+        const handled = await router.handle(req, res);
+        if (!handled) sendJSON(res, 404, { error: '接口不存在' });
+      } catch (e) {
+        if (!res.headersSent && !res.destroyed) sendJSON(res, 500, { error: '服务器错误' });
+        console.error(`[请求] ${req.method} ${String(req.url || '').split('?')[0]} 未捕获异常:`, (e && e.stack) || e);
+      }
+      return;
+    }
+    if (pathname === '/favicon.ico') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    serveStatic(req, res, pathname);
+  } catch (error) {
+    console.error('[请求] 入口处理失败:', error && error.stack || error);
+    if (!res.headersSent && !res.destroyed) sendJSON(res, 500, { error: '服务器错误' });
+    else if (!res.destroyed) res.end();
   }
-  if (pathname === '/favicon.ico') {
-    res.writeHead(204);
-    res.end();
-    return;
-  }
-  serveStatic(req, res, pathname);
 });
 
 server.on('error', (err) => {

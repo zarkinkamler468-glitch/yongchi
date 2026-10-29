@@ -1,4 +1,4 @@
-const { request, toast } = require('../../utils/request');
+const { request, toast, pendingTransactions } = require('../../utils/request');
 const { fmtMoney, fmtDateTime, MEMBER_STATUS_LABEL, cardTypeLabel, cardTypeClass, cardStatusLabel, cardStatusClass, cardAssetText, orderTypeLabel, orderStatusLabel } = require('../../utils/util');
 
 Page({
@@ -8,7 +8,15 @@ Page({
     pays: ['现金', '微信', '支付宝'], payValues: ['cash', 'wechat', 'alipay'], payIndex: 0
   },
   onLoad(options) { this.setData({ id: options.id }); },
-  onShow() { this.load(); },
+  onShow() {
+    // 其他页面完成恢复后，清除本页已失效的重试快照。
+    if (typeof pendingTransactions === 'function') {
+      const pending = pendingTransactions();
+      if (!pending.some(p => p.scope === 'cashier')) { this._pendingRecharge = null; this.setData({ requestId: '' }); }
+      if (!pending.some(p => p.scope === 'checkin')) { this._pendingCheckin = null; this.setData({ checkinRequestId: '', checkinPreview: null }); }
+    }
+    this.load();
+  },
   load() {
     request('/api/members/' + this.data.id).then((d) => {
       this.setData({
@@ -20,7 +28,7 @@ Page({
         },
         cards: d.cards.map((c) => ({ ...c, typeText: cardTypeLabel(c.card_type), typeClass: cardTypeClass(c.card_type), statusText: cardStatusLabel(c.status), statusClass: cardStatusClass(c.status), assetText: cardAssetText(c), extraText: ['count', 'stored'].includes(c.card_type) && c.end_at ? ' · 有效期至 ' + c.end_at : '', canRecharge: c.card_type === 'stored' && !['void', 'refunded', 'frozen'].includes(c.status) })),
         entries: d.entries.map((e) => ({ ...e, timeText: fmtDateTime(e.entry_at), resultOk: e.result === 'success' })),
-        orders: d.orders.map((o) => ({ ...o, typeText: orderTypeLabel(o.order_type), statusText: orderStatusLabel(o.status), amountText: fmtMoney(o.paid_amount) }))
+        orders: d.orders.map((o) => ({ ...o, typeText: orderTypeLabel(o.order_type), statusText: orderStatusLabel(o.status), amountText: fmtMoney(o.order_type === 'refund' ? (o.status === 'paid' ? -o.total_amount : 0) : o.paid_amount) }))
       });
     }).catch((e) => toast(e.message));
   },
@@ -40,7 +48,7 @@ Page({
     this.setData({ submitting: true, requestId: rid });
     request('/api/orders', { data: { ...body, request_id: rid } })
       .then(() => { this._pendingRecharge = null; toast('充值成功', 'success'); this.setData({ submitting: false, requestId: '', showRecharge: false }); this.load(); })
-      .catch((e) => { const rejected = e.status >= 400 && e.status < 500; if (rejected) this._pendingRecharge = null; this.setData({ submitting: false, requestId: rejected ? '' : rid }); toast(e.message); });
+      .catch((e) => { const rejected = [400, 422].includes(e.status); if (rejected) this._pendingRecharge = null; this.setData({ submitting: false, requestId: rejected ? '' : rid }); toast(e.message); });
   },
   doCheckin() {
     if (this._pendingCheckin) { this.confirmCheckin(); return; }
@@ -59,6 +67,6 @@ Page({
     this._pendingCheckin = body;
     request('/api/entries/checkin', { data: body })
       .then(() => { this._pendingCheckin = null; toast('核销成功', 'success'); this.setData({ checkinSubmitting: false, checkinRequestId: '', checkinPreview: null }); this.load(); })
-      .catch((e) => { const rejected = e.status >= 400 && e.status < 500; if (rejected) this._pendingCheckin = null; this.setData({ checkinSubmitting: false, checkinRequestId: rejected ? '' : rid }); toast(e.message); });
+      .catch((e) => { const rejected = [400, 422].includes(e.status); if (rejected) this._pendingCheckin = null; this.setData({ checkinSubmitting: false, checkinRequestId: rejected ? '' : rid }); toast(e.message); });
   }
 });

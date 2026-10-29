@@ -98,12 +98,16 @@ test('显式编号不会与下一次自动编号碰撞', () => {
   assert.ok(sale.body.order.card_no > collidingCard);
 });
 
-test('验证码 SVG 不再包含明文 text，且为 6 位数字', () => {
+test('验证码只下发 PNG 地址，不公开数字几何结构', () => {
   const result = auth.captcha({});
   assert.equal(result.status, 200);
-  assert.equal(result.body.svg.includes('<text'), false);
-  assert.equal(result.body.svg.includes('captcha_code'), false);
-  assert.equal((result.body.svg.match(/<g transform=/g) || []).length, 6);
+  assert.equal(result.body.svg, undefined);
+  let image;
+  auth.captchaImage({ query: new URLSearchParams({ token: result.body.captcha_token }), res: {
+    writeHead(status, headers) { assert.equal(status, 200); assert.equal(headers['Content-Type'], 'image/png'); },
+    end(body) { image = body; }
+  } });
+  assert.deepEqual([...image.subarray(0, 8)], [137,80,78,71,13,10,26,10]);
 });
 
 test('settings 不会写入 constructor 等原型链键', () => {

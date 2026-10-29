@@ -11,6 +11,12 @@ const { paginate } = require('./pagination');
 const CARD_STATUS = { normal: '正常', frozen: '冻结', expired: '过期', void: '作废', refunded: '已退款' };
 const CARD_TYPE_LABEL = { count: '次卡', month: '月卡', year: '年卡', stored: '储值卡' };
 
+// 内部幂等字段不对外下发。
+function withoutInternal(row) {
+  const { request_id, request_hash, ...rest } = row;
+  return rest;
+}
+
 function deriveStatus(c) {
   if (c.status !== 'normal') return c.status;
   if (c.card_type !== 'stored' && c.end_at && c.end_at < today()) return 'expired';
@@ -146,6 +152,11 @@ function listCards({ query }) {
   if (memberId) { where.push('mc.member_id = ?'); args.push(memberId); }
   const status = query.get('status');
   if (status) { where.push('mc.status = ?'); args.push(status); }
+  const search = (query.get('search') || '').trim();
+  if (search) {
+    where.push('(mc.card_no LIKE ? OR m.name LIKE ? OR m.member_no LIKE ? OR m.phone LIKE ?)');
+    args.push(...Array(4).fill(`%${search}%`));
+  }
   const sql = `
     SELECT mc.*, m.name AS member_name, m.member_no, cp.name AS card_name
     FROM member_cards mc
@@ -170,7 +181,7 @@ function getCard({ params }) {
   `).get(params.id);
   if (!c) return fail(404, '会员卡不存在');
   const refreshed = refreshFrozenCard(c);
-  const entries = db.prepare('SELECT * FROM entries WHERE member_card_id = ? ORDER BY id DESC LIMIT 20').all(refreshed.id);
+  const entries = db.prepare('SELECT * FROM entries WHERE member_card_id = ? ORDER BY id DESC LIMIT 20').all(refreshed.id).map(withoutInternal);
   return ok({ card: decorateCard(refreshed), entries });
 }
 
@@ -218,11 +229,14 @@ function extend({ params, body, req }) {
   if (['void', 'refunded'].includes(c.status)) return fail(400, '该卡已作废或退款，不可延期');
   const days = Number(body.days);
   if (!Number.isFinite(days) || days <= 0 || days > 36500 || !Number.isInteger(days)) return fail(400, '延期天数必须是 1 到 36500 的整数');
-  if (c.card_type === 'stored') return fail(400, '储值卡没有有效期，无需延期');
+  if (c.card_type === 'stored' || !c.end_at) return fail(400, '该卡没有有效期，无需延期');
   const p = productOf(c);
   if (p && !p.extension_allowed) return fail(400, '该卡项不允许延期');
-  const base = c.end_at && c.end_at >= today() ? c.end_at : today();
-  const endAt = addDays(base, days);
+  const effectiveEnd = effectiveCardEnd(c);
+  const base = effectiveEnd && effectiveEnd >= today() ? effectiveEnd : today();
+  // 冻结补偿在解冻时统一入账；存储期限先扣掉这部分，不能延期和解冻各补一次。
+  const pausedDays = c.status === 'frozen' ? calendarDays(c.end_at, effectiveEnd) : 0;
+  const endAt = addDays(base, days - pausedDays);
   db.prepare("UPDATE member_cards SET end_at = ?, status = CASE WHEN status='expired' THEN 'normal' ELSE status END, updated_at = ? WHERE id = ?").run(endAt, now(), c.id);
   audit.record({ req, action: '会员卡延期', target_type: 'member_card', target_id: c.id, after: { days, end_at: endAt }, reason: body.reason });
   sms.accountChange(memberOf(c), '会员卡延期', `${c.card_no}延期${days}天，有效期至${endAt}`);

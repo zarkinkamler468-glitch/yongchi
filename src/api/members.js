@@ -11,6 +11,12 @@ const { paginate } = require('./pagination');
 
 const STATUSES = ['normal', 'blacklist', 'inactive'];
 
+// 内部幂等字段不对外下发（与订单列表保持一致）。
+function withoutInternal(row) {
+  const { request_id, request_hash, ...rest } = row;
+  return rest;
+}
+
 function decorate(m, tags, cardCount) {
   const t = tags !== undefined
     ? tags
@@ -54,9 +60,9 @@ function get({ params, req }) {
   const m = db.prepare('SELECT * FROM members WHERE id = ?').get(params.id);
   if (!m) return fail(404, '会员不存在');
   const cards = db.prepare('SELECT mc.*, cp.name AS card_name FROM member_cards mc LEFT JOIN card_products cp ON cp.id = mc.card_product_id WHERE mc.member_id = ? ORDER BY mc.id DESC').all(m.id).map(c => decorateCard(refreshFrozenCard(c)));
-  const entries = db.prepare('SELECT * FROM entries WHERE member_id = ? ORDER BY id DESC LIMIT 20').all(m.id);
+  const entries = db.prepare('SELECT * FROM entries WHERE member_id = ? ORDER BY id DESC LIMIT 20').all(m.id).map(withoutInternal);
   const ownOnly = req?.user?.role === 'frontdesk';
-  const orders = db.prepare('SELECT * FROM orders WHERE member_id = ?' + (ownOnly ? ' AND staff_id = ?' : '') + ' ORDER BY id DESC LIMIT 20').all(m.id, ...(ownOnly ? [req.user.id] : []));
+  const orders = db.prepare('SELECT * FROM orders WHERE member_id = ?' + (ownOnly ? ' AND staff_id = ?' : '') + ' ORDER BY id DESC LIMIT 20').all(m.id, ...(ownOnly ? [req.user.id] : [])).map(withoutInternal);
   return ok({ member: decorate(m), cards, entries, orders });
 }
 

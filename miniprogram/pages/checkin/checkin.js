@@ -1,8 +1,15 @@
-const { request, toast } = require('../../utils/request');
+const { request, toast, pendingTransactions } = require('../../utils/request');
 const { fmtMoney } = require('../../utils/util');
 
 Page({
   data: { keyword: '', gate_no: '前台', people: 1, result: null, preview: null, submitting: false, requestId: '' },
+  onShow() {
+    // 其他页面完成恢复后，清除本页已失效的重试快照。
+    if (typeof pendingTransactions === 'function') {
+      const pending = pendingTransactions();
+      if (!pending.some(p => p.scope === 'checkin')) { this._pendingCheckin = null; this.setData({ requestId: '', preview: null }); }
+    }
+  },
   onInput(e) {
     if (this.data.submitting) return;
     this._previewVersion = (this._previewVersion || 0) + 1;
@@ -46,6 +53,6 @@ Page({
     const rid = this.data.requestId || `checkin-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     this.setData({ submitting: true, requestId: rid });
     this._pendingCheckin = { ...preview };
-    request('/api/entries/checkin', { data: { keyword, card_id: preview.card_id, gate_no, people: Number(people) || 1, confirmed: true, request_id: rid } }).then(() => { this._pendingCheckin = null; toast('核销成功', 'success'); this.setData({ submitting: false, requestId: '', preview: null, result: { ok: true, error: '核销成功，权益已扣减' } }); }).catch((e) => { const rejected = e.status >= 400 && e.status < 500; if (rejected) this._pendingCheckin = null; this.setData({ submitting: false, requestId: rejected ? '' : rid, result: { ok: false, error: e.message } }); });
+    request('/api/entries/checkin', { data: { keyword, card_id: preview.card_id, gate_no, people: Number(people) || 1, confirmed: true, request_id: rid } }).then(() => { this._pendingCheckin = null; toast('核销成功', 'success'); this.setData({ submitting: false, requestId: '', preview: null, result: { ok: true, error: '核销成功，权益已扣减' } }); }).catch((e) => { const rejected = [400, 422].includes(e.status); if (rejected) this._pendingCheckin = null; this.setData({ submitting: false, requestId: rejected ? '' : rid, result: { ok: false, error: e.message } }); });
   }
 });

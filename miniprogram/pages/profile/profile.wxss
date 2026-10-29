@@ -47,3 +47,5 @@
 
 .foot { text-align: center; color: #94a3b8; font-size: 22rpx; margin-top: 60rpx; }
 .beian { text-align: center; color: #94a3b8; font-size: 20rpx; line-height: 1.8; margin-top: 12rpx; padding-bottom: 30rpx; }
+.pending-item { margin-bottom: 20rpx; font-size: 26rpx; line-height: 1.6; }
+.pending-actions { display: flex; gap: 16rpx; margin-top: 12rpx; }

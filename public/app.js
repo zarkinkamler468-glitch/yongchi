@@ -10,31 +10,102 @@ const pad = (n) => String(n).padStart(2, '0');
 const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
 const addDays = (s, n) => { const d = new Date(s + 'T00:00:00'); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
 
-const fmtMoney = (n) => '¥' + Number(n || 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+const fmtMoney = (n) => { const v = Number(n || 0); return (v < 0 ? '-' : '') + '¥' + Math.abs(v).toLocaleString('zh-CN', { maximumFractionDigits: 2 }); };
 const fmtNum = (n) => Number(n || 0).toLocaleString('zh-CN');
 const money2 = (n) => Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100;
 const requestId = (prefix) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
-function pendingRequest(scope, body) {
+function pendingKey(scope) { return `pms_pending_${state.user?.id || 'current'}_${scope}`; }
+function restorePending(scope) {
+  if (state[scope + 'Pending']) return;
+  const raw = localStorage.getItem(pendingKey(scope));
+  if (!raw) return;
+  let pending;
+  try { pending = JSON.parse(raw); } catch (_) { throw new Error('待确认业务记录损坏，请联系维护人员核对流水'); }
+  if (!pending?.body?.request_id || typeof pending.signature !== 'string' || typeof pending.path !== 'string' || (scope === 'cashier' && pending.path !== '/api/orders') || (scope === 'checkin' && pending.path !== '/api/entries/checkin') || (scope === 'refund' && !/^\/api\/orders\/[^/]+\/refund$/.test(pending.path))) throw new Error('待确认业务记录无效，请联系维护人员核对流水');
+  state[scope + 'Pending'] = pending;
+  state[scope + 'RequestId'] = pending.body.request_id;
+}
+function pendingRequest(scope, body, path) {
+  restorePending(scope);
   const signature = JSON.stringify(body);
   const pending = state[scope + 'Pending'];
-  if (pending && pending.signature !== signature) throw new Error('上一笔结果尚未确认，请恢复原参数重试后再办理新业务');
+  if (pending && (pending.signature !== signature || (path && pending.path !== path))) throw new Error('上一笔结果尚未确认，请点击页面顶部的恢复按钮');
   if (pending) return pending.body;
   const payload = { ...body, request_id: state[scope + 'RequestId'] || requestId(scope) };
   state[scope + 'RequestId'] = payload.request_id;
-  state[scope + 'Pending'] = { signature, body: payload };
+  const record = { signature, body: payload, path: path || (scope === 'checkin' ? '/api/entries/checkin' : '/api/orders'), created_at: new Date().toISOString() };
+  // 持久化失败时禁止发送扣款请求；否则刷新后将失去原编号。
+  localStorage.setItem(pendingKey(scope), JSON.stringify(record));
+  state[scope + 'Pending'] = record;
+  renderPendingRecovery();
   return payload;
 }
-function clearPending(scope, error) {
-  if (!error || (error.status >= 400 && error.status < 500)) {
-    state[scope + 'Pending'] = null; state[scope + 'RequestId'] = null;
+function pendingSnapshot(scope) { return { key: pendingKey(scope), record: state[scope + 'Pending'] }; }
+function clearPending(scope, error, snapshot = pendingSnapshot(scope)) {
+  if (!error || [400, 422].includes(error.status)) {
+    const id = snapshot.record?.body?.request_id;
+    if (!id) return;
+    // 旧请求迟到的响应只能清除自己的快照，不能删掉随后开始的新交易。
+    const raw = localStorage.getItem(snapshot.key);
+    let stored = null;
+    try { stored = raw ? JSON.parse(raw) : null; } catch (_) { stored = null; }
+    if (stored?.body?.request_id === id) localStorage.removeItem(snapshot.key);
+    if (snapshot.key === pendingKey(scope) && state[scope + 'Pending']?.body?.request_id === id) {
+      state[scope + 'Pending'] = null; state[scope + 'RequestId'] = null;
+    }
+    renderPendingRecovery();
   }
+}
+function renderPendingRecovery() {
+  const el = $('#pendingRecovery');
+  if (!el) return;
+  const labels = { cashier: '收银', checkin: '核销', refund: '退款申请' };
+  const scopes = ['cashier', 'checkin', 'refund'].filter(s => state[s + 'Pending'] || (state.corruptPendingScopes || []).includes(s));
+  el.hidden = !scopes.length;
+  el.innerHTML = scopes.map(s => {
+    const record = state[s + 'Pending'];
+    const corrupt = !record;
+    const created = record?.created_at ? `（${new Date(record.created_at).toLocaleString('zh-CN')}）` : '';
+    return `<div class="mb-8">${corrupt ? `待确认${labels[s]}记录损坏，请核对流水后放弃` : `有待确认${labels[s]}${created}，请先恢复原请求`}
+      ${corrupt ? '' : `<button class="btn btn-outline" data-action="recoverPending" data-scope="${s}">恢复上一笔</button>`}
+      <button class="btn btn-outline" data-action="discardPending" data-scope="${s}">核对后放弃</button></div>`;
+  }).join('');
+}
+async function discardPending(el) {
+  const scope = el.dataset.scope;
+  if (!['cashier', 'checkin', 'refund'].includes(scope)) return;
+  const message = '请先核对收银流水/核销记录，确认上一笔业务确实未执行。放弃后这条待确认记录会被删除。';
+  const ok = typeof window.confirm === 'function' ? window.confirm(message) : true;
+  if (!ok) return;
+  localStorage.removeItem(pendingKey(scope));
+  state[scope + 'Pending'] = null; state[scope + 'RequestId'] = null;
+  state.corruptPendingScopes = (state.corruptPendingScopes || []).filter(s => s !== scope);
+  renderPendingRecovery();
+  toast('已放弃待确认记录，请核对流水');
+}
+async function recoverPending(el) {
+  const scope = el.dataset.scope;
+  if (!['cashier', 'checkin', 'refund'].includes(scope) || state.recovering || state[scope + 'Submitting']) return;
+  const pending = state[scope + 'Pending'];
+  if (!pending) return;
+  const snapshot = pendingSnapshot(scope);
+  state.recovering = true; el.disabled = true;
+  try {
+    await api(pending.path, { body: pending.body });
+    clearPending(scope, undefined, snapshot); toast('上一笔业务结果已确认，请查看流水'); render(currentView());
+  } catch (e) { clearPending(scope, e, snapshot); toast(e.message, 'error'); }
+  finally { state.recovering = false; el.disabled = false; }
 }
 
 function debounce(fn, ms = 200) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
 function getToken() { return localStorage.getItem('pms_token') || ''; }
 function setToken(t) {
-  if (getToken() !== t) { clearPending('cashier'); clearPending('checkin'); }
+  if (getToken() !== t) {
+    for (const scope of ['cashier', 'checkin', 'refund']) { state[scope + 'Pending'] = null; state[scope + 'RequestId'] = null; }
+    state.corruptPendingScopes = [];
+    if (!t) { state.cardPage = 1; state.cardSearch = ''; }
+  }
   t ? localStorage.setItem('pms_token', t) : localStorage.removeItem('pms_token');
 }
 
@@ -49,21 +120,31 @@ async function api(path, opts = {}) {
   if (opts.body !== undefined) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
   const timer = setTimeout(() => { if (controller) controller.abort(); }, opts.timeout || API_TIMEOUT_MS);
-  let res;
+  let res, data = null, parsed = false;
   try {
     res = await fetch(path, controller ? { ...init, signal: controller.signal } : init);
+    try {
+      data = await res.json();
+      parsed = true;
+    } catch (err) {
+      // 响应体读取被超时中止时，必须保留 AbortError，交给外层统一提示“请求超时”。
+      if (err && err.name === 'AbortError') throw err;
+      data = null;
+    }
   } catch (e) {
-    throw new Error(e && e.name === 'AbortError' ? '请求超时，请检查网络后重试' : '网络异常，请检查网络后重试');
+    throw new Error(e && e.name === 'AbortError' ? '请求超时，结果尚未确认，请恢复原请求' : '网络或响应异常，结果尚未确认，请恢复原请求');
   } finally {
     clearTimeout(timer);
   }
-  let data = {};
-  try { data = await res.json(); } catch (e) { /* ignore */ }
   if (res.status === 401 && path !== '/api/auth/login') {
     setToken(''); state.user = null; showLogin();
-    throw new Error(data.error || '未登录或登录已过期');
+    throw new Error((data && data.error) || '未登录或登录已过期');
   }
-  if (!res.ok) throw Object.assign(new Error(data.error || `请求失败 (${res.status})`), { status: res.status });
+  if (!res.ok) throw Object.assign(new Error((data && data.error) || `请求失败 (${res.status})`), { status: res.status });
+  if (!parsed || !data || typeof data !== 'object' || Array.isArray(data)) throw new Error('响应格式异常，结果尚未确认，请恢复原请求');
+  if (method === 'POST' && ((path === '/api/orders' && (!data.order?.id || !Number.isFinite(data.amount)))
+    || (path === '/api/entries/checkin' && !data.card?.id)
+    || (/^\/api\/orders\/[^/]+\/refund$/.test(path) && !data.refund?.id))) throw new Error('业务响应不完整，请恢复原请求确认结果');
   if (method === 'GET' && !/[?&]page=/.test(path) && Array.isArray(data.list) && data.has_more) {
     let page = data.page;
     let pages = 0;
@@ -102,7 +183,7 @@ const TITLES = {
   shifts: '交班对账', closings: '日结管理', reports: '报表中心', 'staff-performance': '员工绩效', staff: '员工权限', logs: '操作日志', settings: '系统设置', 'sms-settings': '短信通知配置'
 };
 
-const state = { settings: {}, user: null };
+const state = { settings: {}, user: null, corruptPendingScopes: [] };
 
 /* ============================= 提示 / 模态框 ============================= */
 let toastTimer;
@@ -231,7 +312,17 @@ function viewFailed(v, e) {
 }
 
 /* ============================= 登录 / 导航 ============================= */
-function showApp() { $('#loginScreen').hidden = true; $('#app').hidden = false; applyBrand(); applyNav(); switchView(); checkShiftReminder(); refreshRefundBadge(); }
+function showApp() {
+  state.corruptPendingScopes = [];
+  for (const scope of ['cashier', 'checkin', 'refund']) {
+    try { restorePending(scope); } catch (e) {
+      if (!state.corruptPendingScopes.includes(scope)) state.corruptPendingScopes.push(scope);
+      toast(e.message, 'error');
+    }
+  }
+  renderPendingRecovery();
+  $('#loginScreen').hidden = true; $('#app').hidden = false; applyBrand(); applyNav(); switchView(); checkShiftReminder(); refreshRefundBadge();
+}
 function showLogin() {
   closeModal();
   $('#app').hidden = true;
@@ -293,12 +384,22 @@ function applyNav() {
   const el = $(`.nav-item[data-view="${v}"]`);
   if (el && el.style.display === 'none') location.hash = '#/dashboard';
 }
-async function loadCaptcha() {
-  try {
-    const d = await api('/api/auth/captcha');
-    state.captchaToken = d.captcha_token;
-    $('#captchaImg').innerHTML = `<img src="data:image/svg+xml;utf8,${encodeURIComponent(d.svg)}" alt="验证码">`;
-  } catch (e) { /* ignore */ }
+let captchaInFlight = null;
+function loadCaptcha() {
+  // 启动/401/退出可能在同一时刻触发多次，合并成一次签发，避免 20 次/分钟额度被自己耗尽。
+  if (captchaInFlight) return captchaInFlight;
+  captchaInFlight = (async () => {
+    try {
+      const d = await api('/api/auth/captcha');
+      state.captchaToken = d.captcha_token;
+      $('#captchaImg').innerHTML = `<img src="${esc(d.image_path)}" alt="验证码">`;
+    } catch (e) {
+      toast('验证码获取失败，请稍后重试', 'error');
+    } finally {
+      captchaInFlight = null;
+    }
+  })();
+  return captchaInFlight;
 }
 function loadRemembered() {
   const v = localStorage.getItem('pms_remember');
@@ -465,7 +566,7 @@ function memberImportFile(el) {
   reader.onload = async () => {
     try {
       const data = String(reader.result).split(',').pop();
-      const d = await api('/api/members/import/preview', { body: { filename: file.name, data } });
+      const d = await api('/api/members/import/preview', { body: { filename: file.name, data }, timeout: 180000 });
       state.memberImport = { data, filename: file.name };
       const errors = d.errors || [];
       $('#memberImportResult').innerHTML = `<div class="hint">共 ${d.total} 行，${errors.length ? `<span class="badge badge-red">${errors.length} 行有错误</span>` : '<span class="badge badge-green">校验通过</span>'}</div>${errors.length ? `<div class="table-wrap mt-16"><table><thead><tr><th>行号</th><th>错误</th></tr></thead><tbody>${errors.map((x) => `<tr><td>${x.row}</td><td>${esc(x.message)}</td></tr>`).join('')}</tbody></table></div>` : `<div class="table-wrap mt-16"><table><thead><tr><th>行</th><th>会员</th><th>手机号</th><th>卡项</th><th>处理方式</th></tr></thead><tbody>${(d.preview || []).slice(0, 100).map((x) => `<tr><td>${x.row}</td><td>${esc(x.name)}</td><td>${esc(x.phone || '—')}</td><td>${esc(x.card_name || '—')}</td><td>${esc(x.action)}</td></tr>`).join('')}</tbody></table></div>`}`;
@@ -477,7 +578,7 @@ function memberImportFile(el) {
 async function commitMemberImport() {
   if (!state.memberImport) return;
   const button = $('#memberImportCommit'); if (button) { button.disabled = true; button.textContent = '正在导入…'; }
-  try { const d = await api('/api/members/import/commit', { body: state.memberImport }); toast(d.repeated ? '该文件已经导入过，未重复写入' : `已导入 ${d.members} 名会员、${d.cards} 张卡`); closeModal(); refreshMembers(); }
+  try { const d = await api('/api/members/import/commit', { body: state.memberImport, timeout: 180000 }); toast(d.repeated ? '该文件已经导入过，未重复写入' : `已导入 ${d.members} 名会员、${d.cards} 张卡`); closeModal(); refreshMembers(); }
   catch (e) { toast(e.message, 'error'); }
   finally { if ($('#memberImportCommit')) { $('#memberImportCommit').disabled = false; $('#memberImportCommit').textContent = '确认导入'; } }
 }
@@ -548,7 +649,7 @@ async function openMember(id) {
           <td class="num">${c.card_type === 'stored' ? fmtMoney(c.balance) : (c.card_type === 'count' ? c.remaining_uses + ' 次' : '—')}</td>
           <td class="num">${c.end_at || '—'}</td><td>${cardStatusBadge(c.status)}</td>
           ${isBoss ? `<td class="ops">${c.status === 'frozen' ? `<button class="btn btn-sm btn-success" data-action="cardUnfreeze" data-id="${c.id}">解冻</button>` : `<button class="btn btn-sm btn-outline" data-action="cardFreeze" data-id="${c.id}">冻结</button>`}
-          <button class="btn btn-sm btn-outline" data-action="cardExtend" data-id="${c.id}">延期</button>
+          ${c.end_at ? `<button class="btn btn-sm btn-outline" data-action="cardExtend" data-id="${c.id}">延期</button>` : ''}
           <button class="btn btn-sm btn-outline" data-action="cardTransfer" data-id="${c.id}">转卡</button>
           <button class="btn btn-sm btn-danger" data-action="cardVoid" data-id="${c.id}">作废</button></td>` : ''}</tr>`).join('') : '<tr><td colspan="7" class="empty">暂无会员卡</td></tr>'}</tbody></table></div>
         <div class="card-title">最近入场</div>
@@ -556,7 +657,7 @@ async function openMember(id) {
         <tbody>${d.entries.length ? d.entries.map((e) => `<tr><td class="num">${esc((e.entry_at || '').replace('T', ' ').slice(0, 16))}</td><td>${ENTRY_CHARGE[e.charge_type] || '—'}</td><td class="num">${e.deducted_uses ? e.deducted_uses + ' 次' : e.deducted_amount ? fmtMoney(e.deducted_amount) : '—'}</td><td>${e.result === 'success' ? '<span class="badge badge-green">成功</span>' : '<span class="badge badge-red">失败</span>'}</td></tr>`).join('') : '<tr><td colspan="4" class="empty">暂无</td></tr>'}</tbody></table></div>
         <div class="card-title">最近订单</div>
         <div class="table-wrap"><table><thead><tr><th>单号</th><th>类型</th><th>实付</th><th>状态</th></tr></thead>
-        <tbody>${d.orders.length ? d.orders.map((o) => `<tr><td class="num">${esc(o.order_no)}</td><td>${orderTypeBadge(o.order_type)}</td><td class="num">${fmtMoney(o.paid_amount)}</td><td>${orderStatusBadge(o.status)}</td></tr>`).join('') : '<tr><td colspan="4" class="empty">暂无</td></tr>'}</tbody></table></div>
+        <tbody>${d.orders.length ? d.orders.map((o) => `<tr><td class="num">${esc(o.order_no)}</td><td>${orderTypeBadge(o.order_type)}</td><td class="num">${fmtMoney(o.order_type === 'refund' ? (o.status === 'paid' ? -o.total_amount : 0) : o.paid_amount)}</td><td>${orderStatusBadge(o.status)}</td></tr>`).join('') : '<tr><td colspan="4" class="empty">暂无</td></tr>'}</tbody></table></div>
       </div>
       <div class="modal-foot"><button class="btn" data-action="closeModal">关闭</button></div>`, true);
   } catch (e) { toast(e.message, 'error'); }
@@ -638,9 +739,18 @@ async function toggleProduct(el) {
 
 /* ============================= 会员卡账户 ============================= */
 async function renderMemberCards() {
-  const d = await api('/api/member-cards');
+  const version = state.cardPageVersion = (state.cardPageVersion || 0) + 1;
+  const q = new URLSearchParams({ page: state.cardPage || 1, page_size: 100 });
+  if (state.cardSearch) q.set('search', state.cardSearch);
+  const d = await api('/api/member-cards?' + q.toString());
+  if (version !== state.cardPageVersion) return;
   const isBoss = ['boss', 'admin'].includes(state.user?.role);
   $('#view-member-cards').innerHTML = `
+    <div class="toolbar"><input class="input" id="mcSearch" value="${esc(state.cardSearch || '')}" placeholder="卡号 / 姓名 / 会员号 / 手机号">
+      <button class="btn btn-primary" data-action="searchMemberCards">搜索</button>
+      <span>共 ${d.total} 张 · 第 ${d.page} 页</span>
+      <button class="btn" data-action="memberCardsPage" data-page="${d.page - 1}" ${d.page <= 1 ? 'disabled' : ''}>上一页</button>
+      <button class="btn" data-action="memberCardsPage" data-page="${d.page + 1}" ${!d.has_more ? 'disabled' : ''}>下一页</button></div>
     <div class="card"><div class="table-wrap"><table>
       <thead><tr><th>卡号</th><th>会员</th><th>卡项</th><th>类型</th><th>剩余/余额</th><th>有效期</th><th>状态</th>${isBoss ? '<th>操作</th>' : ''}</tr></thead>
       <tbody>${d.list.map((c) => `<tr>
@@ -649,11 +759,23 @@ async function renderMemberCards() {
         <td class="num">${c.end_at || '—'}</td><td>${cardStatusBadge(c.status)}</td>
         ${isBoss ? `<td class="ops">
           ${c.status === 'frozen' ? `<button class="btn btn-sm btn-success" data-action="cardUnfreeze" data-id="${c.id}">解冻</button>` : `<button class="btn btn-sm btn-outline" data-action="cardFreeze" data-id="${c.id}">冻结</button>`}
-          <button class="btn btn-sm btn-outline" data-action="cardExtend" data-id="${c.id}">延期</button>
+          ${c.end_at ? `<button class="btn btn-sm btn-outline" data-action="cardExtend" data-id="${c.id}">延期</button>` : ''}
           <button class="btn btn-sm btn-outline" data-action="cardTransfer" data-id="${c.id}">转卡</button>
           <button class="btn btn-sm btn-danger" data-action="cardVoid" data-id="${c.id}">作废</button>
         </td>` : ''}
-      </tr>`).join('') || '<tr><td colspan="8" class="empty">暂无会员卡</td></tr>'}</tbody></table></div></div>`;
+      </tr>`).join('') || `<tr><td colspan="${isBoss ? 9 : 8}" class="empty">暂无会员卡</td></tr>`}</tbody></table></div></div>`;
+}
+
+async function searchMemberCards() {
+  state.cardSearch = $('#mcSearch').value.trim(); state.cardPage = 1;
+  try { await renderMemberCards(); } catch (e) { toast(e.message, 'error'); }
+}
+async function memberCardsPage(el) {
+  if (el.disabled) return;
+  const page = Number(el.dataset.page);
+  if (!Number.isInteger(page) || page < 1) return;
+  state.cardPage = page;
+  try { await renderMemberCards(); } catch (e) { toast(e.message, 'error'); }
 }
 
 function cardPrompt(title, fieldHtml, action, id) {
@@ -757,12 +879,15 @@ async function doCheckin() {
 async function confirmCheckin(el) {
   if (state.checkinSubmitting || !state.checkinPreview) return;
   const snapshot = { ...state.checkinPreview };
+  let pending;
   state.checkinSubmitting = true; el.disabled = true;
   try {
-    await api('/api/entries/checkin', { body: pendingRequest('checkin', { ...snapshot, confirmed: true }) });
-    clearPending('checkin');
+    const body = pendingRequest('checkin', { ...snapshot, confirmed: true });
+    pending = pendingSnapshot('checkin');
+    await api('/api/entries/checkin', { body });
+    clearPending('checkin', undefined, pending);
     state.checkinPreview = null; state.checkinRequestId = null; $('#ckResult').innerHTML = '<span class="badge badge-green">核销成功，权益已扣减</span>'; toast('核销成功');
-  } catch (e) { clearPending('checkin', e); toast(e.message, 'error'); el.disabled = false; }
+  } catch (e) { clearPending('checkin', e, pending); toast(e.message, 'error'); el.disabled = false; }
   finally { state.checkinSubmitting = false; }
 }
 async function retryCheckin() {
@@ -944,7 +1069,7 @@ function cashierRenewCard() {
   if (state.cashierTab !== 'renew') return;
   const value = $('#csCard')?.value;
   const card = value ? (state.cashierCards || []).find(c => String(c.id) === String(value)) : null;
-  const products = card ? (state.products || []).filter(p => p.type === card.card_type) : [];
+  const products = card ? (state.products || []).filter(p => p.type === card.card_type && (!card.end_at || Number(p.duration_days) > 0)) : [];
   if ($('#csProduct')) $('#csProduct').innerHTML = products.map(p => `<option value="${p.id}">${esc(p.name)} · ${fmtMoney(p.price)}</option>`).join('') || '<option value="">请先选择要续费的会员卡</option>';
   updateCashierTotal();
 }
@@ -986,13 +1111,16 @@ async function submitCashier() {
     payments
   };
   if (tab === 'recharge') body.amount = Number($('#csAmount')?.value);
+  let pending;
   try {
     state.cashierSubmitting = true;
-    const d = await api('/api/orders', { body: pendingRequest('cashier', body) });
-    clearPending('cashier');
+    const payload = pendingRequest('cashier', body);
+    pending = pendingSnapshot('cashier');
+    const d = await api('/api/orders', { body: payload });
+    clearPending('cashier', undefined, pending);
     toast(`收款成功：${fmtMoney(d.amount)}`);
     renderCashierForm(tab);
-  } catch (e) { clearPending('cashier', e); toast(e.message, 'error'); }
+  } catch (e) { clearPending('cashier', e, pending); toast(e.message, 'error'); }
   finally { state.cashierSubmitting = false; }
 }
 
@@ -1070,14 +1198,20 @@ function refundApply(el) {
 async function confirmRefundApply(el) {
   if (state.refundSubmitting) return;
   state.refundSubmitting = true; el.disabled = true;
-  state.refundRequestId ||= requestId('refund');
-  try { await api(`/api/orders/${el.dataset.id}/refund`, { body: { amount: $('#rfAmount').value, reason: $('#rfReason').value, request_id: state.refundRequestId } }); state.refundRequestId = null; toast('退款申请已提交'); closeModal(); refreshOrders(); } catch (e) { toast(e.message, 'error'); el.disabled = false; } finally { state.refundSubmitting = false; }
+  const path = `/api/orders/${el.dataset.id}/refund`;
+  let pending;
+  try {
+    const body = pendingRequest('refund', { amount: $('#rfAmount').value, reason: $('#rfReason').value }, path);
+    pending = pendingSnapshot('refund');
+    await api(path, { body }); clearPending('refund', undefined, pending); toast('退款申请已提交'); closeModal(); refreshOrders();
+  } catch (e) { clearPending('refund', e, pending); toast(e.message, 'error'); el.disabled = false; }
+  finally { state.refundSubmitting = false; }
 }
 async function exportOrders() {
   const q = new URLSearchParams();
   if ($('#oFrom')?.value) q.set('from', $('#oFrom').value);
   if ($('#oTo')?.value) q.set('to', $('#oTo').value);
-  const d = await api('/api/reports/export/orders?' + q.toString());
+  const d = await api('/api/reports/export/orders?' + q.toString(), { timeout: 180000 });
   downloadCSV(d.csv, d.filename);
 }
 
@@ -1321,10 +1455,10 @@ async function refreshReports() {
     + table('按支付方式', d.by_pay.map((x) => ({ label: PAY_LABEL[x.pay_method] || x.pay_method, value: x.amount })))
     + table('按员工', d.by_staff.map((x) => ({ label: x.real_name || ('#' + x.staff_id), value: x.amount })));
 }
-async function exportMembers() { const d = await api('/api/reports/export/members'); downloadCSV(d.csv, d.filename); }
+async function exportMembers() { const d = await api('/api/reports/export/members', { timeout: 180000 }); downloadCSV(d.csv, d.filename); }
 async function exportOrders2() {
   const q = new URLSearchParams({ from: $('#rpFrom').value, to: $('#rpTo').value });
-  const d = await api('/api/reports/export/orders?' + q.toString());
+  const d = await api('/api/reports/export/orders?' + q.toString(), { timeout: 180000 });
   downloadCSV(d.csv, d.filename);
 }
 
@@ -1576,6 +1710,10 @@ const logSearchDebounced = debounce(refreshLogs, 200);
 
 function handle(name, el) {
   switch (name) {
+    case 'recoverPending': recoverPending(el); break;
+    case 'discardPending': discardPending(el); break;
+    case 'searchMemberCards': searchMemberCards(); break;
+    case 'memberCardsPage': memberCardsPage(el); break;
     case 'retryView': render(el.dataset.view); break;
     case 'reloadSettings': loadSettings().then(() => renderSettings()); break;
     case 'closeModal': closeModal(); break;
@@ -1658,7 +1796,6 @@ function handle(name, el) {
 /* ============================= 启动 ============================= */
 (async function init() {
   bindLogin();
-  loadCaptcha();
   loadRemembered();
   const now = new Date();
   $('#todayLabel').textContent = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} 周${'日一二三四五六'[now.getDay()]}`;
@@ -1674,6 +1811,7 @@ function handle(name, el) {
     await loadSettings();
     showApp();
   } catch (e) {
-    showLogin();
+    // api 的 401 处理已经调用 showLogin；这里只处理网络/其他失败，避免重复签发验证码。
+    if ($('#loginScreen').hidden) showLogin();
   }
 })();

@@ -231,6 +231,10 @@ try {
 ensureColumn('orders', 'benefit_uses', 'benefit_uses INTEGER NOT NULL DEFAULT 0');
 ensureColumn('orders', 'benefit_amount', 'benefit_amount REAL NOT NULL DEFAULT 0');
 ensureColumn('orders', 'benefit_days', 'benefit_days INTEGER NOT NULL DEFAULT 0');
+// 续费单保存续费前后的有效期（空字符串表示不限期），用于全额退款时精确恢复，
+// 避免过期卡续费后退款把有效期“复活”到今天。
+ensureColumn('orders', 'benefit_end_before', 'benefit_end_before TEXT');
+ensureColumn('orders', 'benefit_end_after', 'benefit_end_after TEXT');
 ensureColumn('orders', 'benefit_snapshot_known', 'benefit_snapshot_known INTEGER NOT NULL DEFAULT 0');
 ensureColumn('orders', 'approved_at', 'approved_at TEXT');
 ensureColumn('orders', 'request_id', 'request_id TEXT');

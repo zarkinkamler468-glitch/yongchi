@@ -74,9 +74,9 @@ function validateEntitlementRefund(order, card, delta, full) {
     if (!card.end_at) throw httpError(400, '会员卡有效期异常，无法退款');
     if (addDays(effectiveCardEnd(card), -delta.days) < today()) throw httpError(400, '该有效期权益已部分使用，无法按当前金额退款');
   }
-  if (full && order.order_type === 'open') {
+  if (full && ['open', 'renew'].includes(order.order_type)) {
     const used = db.prepare("SELECT id FROM entries WHERE member_card_id = ? AND result = 'success' AND entry_at >= ? LIMIT 1").get(card.id, order.created_at);
-    if (used) throw httpError(400, '该卡已产生核销记录，不能全额退款');
+    if (used) throw httpError(400, '该订单已产生核销记录，不能全额退款；请按已消费权益部分退款或人工核算');
   }
 }
 
@@ -193,6 +193,9 @@ function create({ body, req }) {
   let benefitUses = 0;
   let benefitAmount = 0;
   let benefitDays = 0;
+  // 续费单快照：空字符串表示不限期，null 表示旧订单没有快照。
+  let benefitEndBefore = null;
+  let benefitEndAfter = null;
 
   if (orderType === 'open') {
     const cp = db.prepare('SELECT * FROM card_products WHERE id = ?').get(body.card_product_id);
@@ -218,13 +221,18 @@ function create({ body, req }) {
     benefitUses = cp.type === 'count' ? Number(cp.total_uses) || 0 : 0;
     benefitAmount = cp.type === 'stored' ? money(cp.stored_value) : 0;
     memberCardId = card.id;
+    benefitEndBefore = card.end_at || '';
+    benefitEndAfter = card.end_at || '';
     if (cp.type === 'count') {
+      if (card.end_at && cp.duration_days === 0) throw httpError(400, '有期限次卡不能续费不限期卡项，请选择有期限卡项或新开卡');
       let endAt = card.end_at;
-      if (cp.duration_days > 0) {
+      // 不限期账户的原有次数不能因续费获得有限期；保持不限期，退款也无需回收期限。
+      if (card.end_at && cp.duration_days > 0) {
         const base = card.end_at && card.end_at >= today() ? card.end_at : today();
         endAt = addDays(base, Number(cp.duration_days));
         benefitDays = daysBetween(base, endAt);
       }
+      benefitEndAfter = endAt || '';
       db.prepare("UPDATE member_cards SET remaining_uses = remaining_uses + ?, end_at = ?, status = 'normal', updated_at = ? WHERE id = ?")
         .run(cp.total_uses || 0, endAt, ts, card.id);
     }
@@ -233,6 +241,7 @@ function create({ body, req }) {
       const base = card.end_at && card.end_at >= today() ? card.end_at : today();
       const endAt = computeCardEnd(cp.type, cp.duration_days, base, !!card.end_at && card.end_at >= today());
       benefitDays = daysBetween(base, endAt);
+      benefitEndAfter = endAt || '';
       db.prepare('UPDATE member_cards SET end_at = ?, status = ?, updated_at = ? WHERE id = ?').run(endAt, 'normal', ts, card.id);
     }
   } else {
@@ -268,9 +277,9 @@ function create({ body, req }) {
 
   // 创建订单
   const orderNo = nextOrderNo();
-  const r = db.prepare(`INSERT INTO orders(order_no, order_type, member_id, member_card_id, total_amount, discount_amount, payable_amount, paid_amount, status, shift_id, staff_id, benefit_uses, benefit_amount, benefit_days, request_id, request_hash, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(orderNo, orderType, member.id, memberCardId, total, discount, payable, shift.id, staff.id, benefitUses, benefitAmount, benefitDays, requestId, fingerprint, ts);
+  const r = db.prepare(`INSERT INTO orders(order_no, order_type, member_id, member_card_id, total_amount, discount_amount, payable_amount, paid_amount, status, shift_id, staff_id, benefit_uses, benefit_amount, benefit_days, benefit_end_before, benefit_end_after, request_id, request_hash, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(orderNo, orderType, member.id, memberCardId, total, discount, payable, shift.id, staff.id, benefitUses, benefitAmount, benefitDays, benefitEndBefore, benefitEndAfter, requestId, fingerprint, ts);
   const orderId = Number(r.lastInsertRowid);
   db.prepare('UPDATE orders SET benefit_snapshot_known=1 WHERE id=?').run(orderId);
   if (orderType === 'open') db.prepare('UPDATE member_cards SET created_order_id = ? WHERE id = ?').run(orderId, memberCardId);
@@ -367,6 +376,8 @@ function refundApprove({ params, body, req }) {
   const o = orderById(r.original_order_id);
   if (!o) throw httpError(404, '原订单不存在');
   const method = body.refund_method === 'cash' ? 'cash' : 'original';
+  const activeRefundShift = db.prepare("SELECT id FROM shifts WHERE staff_id = ? AND status = 'active'").get(req.user.id)
+    || db.prepare("SELECT id FROM shifts WHERE staff_id = ? AND status = 'active'").get(r.staff_id);
   const ts = now();
   const amount = money(r.total_amount);
   const remainingRefundable = money(Number(o.paid_amount) - alreadyRefunded(o.id));
@@ -384,6 +395,18 @@ function refundApprove({ params, body, req }) {
   if (card && Number(card.member_id) !== Number(o.member_id)) throw httpError(400, '该会员卡已转给其他会员，不能直接退款；请先处理转卡关系');
   const delta = entitlementDelta(o, amount);
   const full = Math.round(Number(o.paid_amount) * 100) === Math.round(delta.totalAfter * 100);
+  // 续费单必须有续费前后的有效期快照，且当前有效期没有被后续续费/延期改动；
+  // 否则全额退款可能把过期卡“复活”或覆盖后续权益。
+  const renewEndSnapshot = o.order_type === 'renew' && o.benefit_end_after !== null && o.benefit_end_after !== undefined;
+  if (full && o.order_type === 'renew') {
+    if (!card) throw httpError(400, '续费单缺少会员卡，无法核对权益');
+    // 旧续费单没有快照：只有本身不限期（end_at 为空）时才允许全退；有期限的必须人工核算。
+    if (!renewEndSnapshot && card.end_at) throw httpError(400, '历史续费单缺少有效期快照，不能全额退款；请按已消费权益部分退款或人工核算');
+    if (renewEndSnapshot) {
+      if (card.status === 'frozen') throw httpError(400, '会员卡当前处于冻结状态，解冻后再处理续费退款');
+      if (String(card.end_at || '') !== String(o.benefit_end_after || '')) throw httpError(400, '该卡在续费后已有其他变更（延期/续费），不能直接全额退款；请人工核算');
+    }
+  }
   if (full && o.order_type === 'open') {
     const laterOrder = db.prepare("SELECT id FROM orders WHERE member_card_id = ? AND id != ? AND order_type IN ('open','renew','recharge') AND status IN ('paid','partial_refund') AND id > ?").get(card && card.id, o.id, o.id);
     if (laterOrder) throw httpError(400, '该开卡后已有后续业务，不能直接全额退款；请先处理后续订单');
@@ -392,6 +415,7 @@ function refundApprove({ params, body, req }) {
 
   // 生成负向支付记录
   if (method === 'cash') {
+    if (!activeRefundShift) throw httpError(400, '现金退款必须归属进行中的班次，请出款人员先开班');
     db.prepare('INSERT INTO payments(order_id, pay_method, amount, paid_at, staff_id) VALUES (?, ?, ?, ?, ?)')
       .run(r.id, 'cash', -amount, ts, req.user.id);
   } else {
@@ -410,6 +434,7 @@ function refundApprove({ params, body, req }) {
       const methodAvailable = money(Number(p.amount) - Number(refundedByMethod[refundKey] || 0));
       if (methodAvailable <= 0) continue;
       const amt = Math.min(remaining, methodAvailable);
+      if (p.pay_method === 'cash' && !activeRefundShift) throw httpError(400, '原路退回含现金，必须先为出款人员开班');
       db.prepare('INSERT INTO payments(order_id, source_card_id, pay_method, amount, paid_at, staff_id) VALUES (?, ?, ?, ?, ?, ?)')
         .run(r.id, p.source_card_id || null, p.pay_method, -amt, ts, req.user.id);
       if (p.pay_method === 'stored') {
@@ -433,14 +458,17 @@ function refundApprove({ params, body, req }) {
     } else {
       if (delta.uses > 0) db.prepare('UPDATE member_cards SET remaining_uses = remaining_uses - ?, updated_at = ? WHERE id = ?').run(delta.uses, ts, card.id);
       if (delta.amount > 0) db.prepare('UPDATE member_cards SET balance = ROUND(balance - ?, 2), updated_at = ? WHERE id = ?').run(delta.amount, ts, card.id);
-      if (delta.days > 0) db.prepare('UPDATE member_cards SET end_at = ?, updated_at = ? WHERE id = ?').run(addDays(card.end_at, -delta.days), ts, card.id);
+      if (full && renewEndSnapshot) {
+        // 精确恢复续费前的有效期（空串表示不限期）；不能按当前 end_at 反推。
+        db.prepare('UPDATE member_cards SET end_at = ?, updated_at = ? WHERE id = ?').run(o.benefit_end_before || null, ts, card.id);
+      } else if (delta.days > 0) {
+        db.prepare('UPDATE member_cards SET end_at = ?, updated_at = ? WHERE id = ?').run(addDays(card.end_at, -delta.days), ts, card.id);
+      }
     }
   }
 
   // 退款现金必须有归属：优先审批人当前班次；审批人（财务、老板）没有班次时，
-  // 归到退款申请人的进行中班次（通常是收银前台的钱箱），两者都没有才留空。
-  const activeRefundShift = db.prepare("SELECT id FROM shifts WHERE staff_id = ? AND status = 'active'").get(req.user.id)
-    || db.prepare("SELECT id FROM shifts WHERE staff_id = ? AND status = 'active'").get(r.staff_id);
+  // 归到退款申请人的进行中班次（通常是收银前台的钱箱）；只有非现金退款可无班次。
   db.prepare("UPDATE orders SET status = 'paid', approved_by = ?, approved_at = ?, shift_id = ? WHERE id = ?")
     .run(req.user.id, ts, activeRefundShift ? activeRefundShift.id : null, r.id);
   const newRefunded = money(alreadyRefunded(o.id));
