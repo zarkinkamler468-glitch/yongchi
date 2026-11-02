@@ -1,0 +1,33 @@
+# 1Panel「容器 → 编排」复制本文件；全部宿主机路径使用绝对路径。
+# OpenResty 必须能够从其网络命名空间访问宿主机 127.0.0.1:3000。
+services:
+  app:
+    build:
+      context: /opt/pool-management-system
+      dockerfile: deploy/Dockerfile.production
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:24-bookworm-slim}
+    image: pool-management-system:${RELEASE_TAG:-candidate}
+    container_name: pool-production-app
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3000"
+      TZ: Asia/Shanghai
+      PMS_DB_PATH: /app/data/pool.db
+      PMS_SEED_DEMO: "0"
+      # 第一次启动保持空值，查明真实直连代理地址后填写并重建容器。
+      TRUST_PROXY: ${TRUST_PROXY:-}
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - /opt/pool-management-system/data:/app/data
+      - /opt/pool-backups/daily:/backups
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

@@ -5,6 +5,7 @@ data
 review
 test
 recovered
+archive
 backups
 *.log
 .env

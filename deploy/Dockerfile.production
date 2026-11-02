@@ -1,0 +1,22 @@
+# syntax=docker/dockerfile:1
+# 首次验证可用版本标签；正式发布用构建参数固定已验证的官方镜像摘要。
+ARG NODE_IMAGE=node:24-bookworm-slim
+FROM ${NODE_IMAGE} AS dependencies
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
+FROM ${NODE_IMAGE}
+ENV NODE_ENV=production TZ=Asia/Shanghai HOST=0.0.0.0 PORT=3000 PMS_DB_PATH=/app/data/pool.db
+WORKDIR /app
+COPY --from=dependencies --chown=node:node /app/node_modules ./node_modules
+COPY --chown=node:node package.json package-lock.json server.js ./
+COPY --chown=node:node src ./src
+COPY --chown=node:node public ./public
+COPY --chown=node:node scripts ./scripts
+RUN mkdir -p /app/data /backups && chown node:node /app/data /backups
+USER node
+EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:3000/api/public-config').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+CMD ["node", "server.js"]
