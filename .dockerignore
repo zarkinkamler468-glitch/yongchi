@@ -1,0 +1,10 @@
+.git
+.gitignore
+node_modules
+data
+review
+test
+recovered
+backups
+*.log
+.env

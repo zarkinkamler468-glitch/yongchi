@@ -1,5 +1,9 @@
 # 游泳馆管理系统部署与运维手册（1Panel）
 
+> **生产环境优先阅读：[PRODUCTION-DEPLOYMENT.md](PRODUCTION-DEPLOYMENT.md)。**
+>
+> 新文档使用 Ubuntu 24.04 + Docker Compose + Caddy，依赖在镜像内安装，宿主机不需要 Node/npm，也不再使用 1Panel 的 Node.js 运行环境；本文件保留为 1Panel 运行环境/旧部署参考。
+
 适用版本：v0.5（Node.js 22.13+、内置 `node:sqlite`、无构建前端）。
 本文覆盖：全新部署、域名与 HTTPS、首次初始化、微信小程序、短信、备份恢复、版本升级、日常运维与故障排查。
 

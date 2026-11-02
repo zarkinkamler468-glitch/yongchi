@@ -115,7 +115,7 @@ Remove-Item data\pool.db* -Force   # Windows PowerShell
 - **安全加固**：登录爆破防护（连错 5 次锁 10 分钟）、目录穿越防护、参数化 SQL 防注入、操作日志最小化（90 天自动清理）。经反向代理部署时把 `TRUST_PROXY` 设为反代直连地址（端口已隔离时可用 `1`）并转发 `X-Forwarded-For`，登录限流和日志 IP 才能按真实客户端计算。
 - **员工微信登录**：小程序内微信一键登录，首次绑定账号后免密；需在「系统设置」填入小程序 AppID/AppSecret。
 - **员工端小程序**（`miniprogram/`）已适配 v0.5：登录（微信+密码）、概览、收银、会员、会员详情、入场核销、交班、统计、流水、退款审批、我的。
-- **部署**：详见 [1Panel 部署与运维手册](DEPLOYMENT.md)，包含运行环境、反向代理与 HTTPS、首次初始化、备份恢复、版本升级和故障排查。
+- **部署**：生产环境优先看 [生产部署指南](PRODUCTION-DEPLOYMENT.md)（Ubuntu 24.04 + Docker Compose + Caddy，宿主机不需要 Node/npm）；1Panel Node 运行环境的旧方案见 [1Panel 部署与运维手册](DEPLOYMENT.md)。
 - 预留扩展：卡种升级、二维码凭证、PDF 报表。
 
 

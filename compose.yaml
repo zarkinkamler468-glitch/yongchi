@@ -1,0 +1,63 @@
+name: pool-production
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pool-management-system:production
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 20s
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3000"
+      TZ: Asia/Shanghai
+      PMS_DB_PATH: /app/data/pool.db
+      # app 不发布端口，只有同一 Docker 网络的 Caddy 能访问；因此可以信任单层代理头。
+      TRUST_PROXY: "1"
+      PMS_INITIAL_ADMIN_PASSWORD: ${PMS_INITIAL_ADMIN_PASSWORD:?请在 .env 设置}
+      PMS_INITIAL_BOSS_PASSWORD: ${PMS_INITIAL_BOSS_PASSWORD:?请在 .env 设置}
+      PMS_INITIAL_FRONTDESK_PASSWORD: ${PMS_INITIAL_FRONTDESK_PASSWORD:?请在 .env 设置}
+      PMS_INITIAL_FINANCE_PASSWORD: ${PMS_INITIAL_FINANCE_PASSWORD:?请在 .env 设置}
+    volumes:
+      - ./data:/app/data
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/public-config').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?请在 .env 设置域名}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -2,5 +2,8 @@ node_modules/
 data/
 initial-passwords.txt
 miniprogram/project.private.config.json
+.env
+recovered/
+backups/
 *.log
 .DS_Store
